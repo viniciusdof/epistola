@@ -11,6 +11,7 @@ pub enum Method {
     Delete,
     Head,
     Options,
+    Query,
     Other(String),
 }
 
@@ -24,6 +25,7 @@ impl Method {
             Method::Delete => "DELETE",
             Method::Head => "HEAD",
             Method::Options => "OPTIONS",
+            Method::Query => "QUERY",
             Method::Other(s) => s,
         }
     }
@@ -47,6 +49,7 @@ impl FromStr for Method {
             "DELETE" => Method::Delete,
             "HEAD" => Method::Head,
             "OPTIONS" => Method::Options,
+            "QUERY" => Method::Query,
             other => Method::Other(other.to_string()),
         })
     }
@@ -63,6 +66,7 @@ mod tests {
         assert_eq!("get".parse::<Method>().unwrap(), Method::Get);
         assert_eq!("Post".parse::<Method>().unwrap(), Method::Post);
         assert_eq!("DELETE".parse::<Method>().unwrap(), Method::Delete);
+        assert_eq!("query".parse::<Method>().unwrap(), Method::Query);
     }
 
     #[test]
@@ -88,6 +92,7 @@ mod tests {
             (Method::Delete, "DELETE"),
             (Method::Head, "HEAD"),
             (Method::Options, "OPTIONS"),
+            (Method::Query, "QUERY"),
         ];
         for (method, expected) in cases {
             assert_eq!(method.as_str(), expected);

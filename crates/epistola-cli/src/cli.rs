@@ -6,7 +6,7 @@ use epistola_core::{Body, Method, Request};
 #[derive(Parser, Debug)]
 #[command(name = "epistola", version, about)]
 pub struct Cli {
-    /// HTTP method: GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, ...
+    /// HTTP method: GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, QUERY, ...
     pub method: String,
 
     /// Request URL
