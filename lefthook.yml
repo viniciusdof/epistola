@@ -1,0 +1,17 @@
+pre-commit:
+  parallel: true
+  commands:
+    fmt:
+      glob: "*.rs"
+      run: mise exec -- just fmt-check
+    clippy:
+      glob: "*.rs"
+      run: mise exec -- just lint
+
+pre-push:
+  parallel: false
+  commands:
+    test:
+      run: mise exec -- just test
+    deny:
+      run: mise exec -- just deny

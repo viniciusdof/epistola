@@ -1,0 +1,7 @@
+[tools]
+"github:terror/just-lsp" = "0.4.8"
+"cargo:cargo-deny" = "0.20.2"
+"cargo:cargo-llvm-cov" = "0.8.7"
+just = "1.56.0"
+lefthook = "2.1.10"
+rust = "1.97.0"

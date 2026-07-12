@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/epistola-core",
+    "crates/epistola-http",
+    "crates/epistola-cli",
+    "crates/epistola-format",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97.0"
+license = "MIT"
+repository = "https://codeberg.org/viniciusdof/epistola"
+publish = false
+
+[workspace.dependencies]
+epistola-core = { path = "crates/epistola-core" }
+epistola-http = { path = "crates/epistola-http" }
+epistola-format = { path = "crates/epistola-format" }
+async-trait = "0.1.89"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "warn"
+all = { level = "warn", priority = -1 }

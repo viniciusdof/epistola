@@ -1,0 +1,21 @@
+[package]
+name = "epistola-http"
+description = "reqwest-based HttpExecutor implementation for epistola-core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+epistola-core.workspace = true
+async-trait.workspace = true
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "http2", "query"] }
+
+[dev-dependencies]
+tokio.workspace = true
+wiremock = "0.6.5"
+
+[lints]
+workspace = true

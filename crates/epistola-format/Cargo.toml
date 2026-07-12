@@ -1,0 +1,24 @@
+[package]
+name = "epistola-format"
+description = "Parses epistola collection/request files (.epi TOML, epistola.toml, environments) into epistola-core types."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+epistola-core.workspace = true
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "1.1.2"
+thiserror.workspace = true
+directories = "6.0.0"
+base64 = "0.22.1"
+form_urlencoded = "1.2.2"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true
