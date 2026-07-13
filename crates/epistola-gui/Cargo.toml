@@ -1,0 +1,22 @@
+[package]
+name = "epistola-gui"
+description = "Prototype GPUI-based desktop client for epistola"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "epistola-gui"
+path = "src/main.rs"
+
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", tag = "v1.10.3" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", tag = "v1.10.3", features = [
+    "font-kit",
+] }
+
+[lints]
+workspace = true

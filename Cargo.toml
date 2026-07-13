@@ -6,6 +6,7 @@ members = [
     "crates/epistola-format",
     "crates/epistola-engine",
     "crates/epistola-cli",
+    "crates/epistola-gui",
 ]
 
 [workspace.package]
