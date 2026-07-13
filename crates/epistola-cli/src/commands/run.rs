@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Context, Result};
 use clap::Args;
 use epistola_core::HttpExecutor;
-use epistola_format::{LoadedCollection, RequestFile};
+use epistola_format::{load_folder_chain, LoadedCollection, RequestFile};
 use epistola_http::ReqwestExecutor;
 
 use crate::client_config::ClientArgs;
@@ -50,15 +50,17 @@ pub async fn run(args: RunArgs) -> Result<()> {
         "not inside a collection (no epistola.toml found in this or any parent directory)",
     )?;
 
-    let mut resolver = collection.resolver_for_environment(args.env.as_deref())?;
-    let unresolved = file.to_unresolved();
-    resolver = resolver.layer(unresolved.variables.clone());
-    resolver = resolver.layer(parse_var_overrides(&args.vars)?);
-
     let base_dir = args
         .path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
+
+    let mut resolver = collection.resolver_for_environment(args.env.as_deref())?;
+    let chain = load_folder_chain(&collection.root, base_dir)?;
+    let unresolved = file.to_unresolved().with_folder_inheritance(&chain);
+    resolver = resolver.layer(unresolved.variables.clone());
+    resolver = resolver.layer(parse_var_overrides(&args.vars)?);
+
     let request = unresolved.resolve(&resolver, base_dir)?;
 
     if args.verbose {
@@ -172,6 +174,94 @@ mod tests {
             json: false,
             output: None,
             check_status: false,
+            verbose: false,
+            client: ClientArgs::default(),
+        };
+
+        run(args).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_sends_auth_inherited_from_an_ancestor_folder_toml() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_matcher("/users"))
+            .and(header("authorization", "Bearer s3cr3t"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        write(
+            dir.path(),
+            "environments/dev.toml",
+            "[variables]\ntoken = \"s3cr3t\"\n",
+        );
+        write(
+            dir.path(),
+            "folder.toml",
+            "[auth]\ntype = \"bearer\"\ntoken = \"{{token}}\"\n",
+        );
+        write(
+            dir.path(),
+            "users/list.req.toml",
+            &format!(
+                "[request]\nname = \"n\"\nmethod = \"GET\"\nurl = \"{}/users\"\n",
+                server.uri()
+            ),
+        );
+
+        let args = RunArgs {
+            path: dir.path().join("users/list.req.toml"),
+            env: Some("dev".to_string()),
+            vars: Vec::new(),
+            json: false,
+            output: None,
+            check_status: false,
+            verbose: false,
+            client: ClientArgs::default(),
+        };
+
+        run(args).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_sends_no_auth_when_the_request_explicitly_opts_out_of_inheritance() {
+        let server = MockServer::start().await;
+        // Matches only requests *without* an `authorization` header — if
+        // the executor incorrectly still attaches the folder's inherited
+        // auth, no mock matches, wiremock 404s, and `check_status` below
+        // turns that into a test failure.
+        Mock::given(method("GET"))
+            .and(|req: &wiremock::Request| !req.headers.contains_key("authorization"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        write(
+            dir.path(),
+            "folder.toml",
+            "[auth]\ntype = \"bearer\"\ntoken = \"s3cr3t\"\n",
+        );
+        write(
+            dir.path(),
+            "public-status.req.toml",
+            &format!(
+                "[request]\nname = \"n\"\nmethod = \"GET\"\nurl = \"{}\"\n\n[request.auth]\ntype = \"none\"\n",
+                server.uri()
+            ),
+        );
+
+        let args = RunArgs {
+            path: dir.path().join("public-status.req.toml"),
+            env: None,
+            vars: Vec::new(),
+            json: false,
+            output: None,
+            check_status: true,
             verbose: false,
             client: ClientArgs::default(),
         };

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use epistola_core::LayeredVariableResolver;
-use epistola_format::{LoadedCollection, RequestFile};
+use epistola_format::{load_folder_chain, LoadedCollection, RequestFile};
 
 use crate::errors::CliError;
 use crate::output;
@@ -224,13 +224,15 @@ fn show(args: ShowArgs) -> Result<()> {
         "not inside a collection (no epistola.toml found in this or any parent directory)",
     )?;
 
-    let mut resolver = collection.resolver_for_environment(args.env.as_deref())?;
-    let unresolved = file.to_unresolved();
-    resolver = resolver.layer(unresolved.variables.clone());
     let base_dir = args
         .path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
+
+    let mut resolver = collection.resolver_for_environment(args.env.as_deref())?;
+    let chain = load_folder_chain(&collection.root, base_dir)?;
+    let unresolved = file.to_unresolved().with_folder_inheritance(&chain);
+    resolver = resolver.layer(unresolved.variables.clone());
     let request = unresolved.resolve(&resolver, base_dir)?;
 
     if args.json {
@@ -280,7 +282,7 @@ fn lint(args: LintArgs, cwd: &Path) -> Result<()> {
     let mut issues = Vec::new();
     for path in find_request_files(&collection.root)? {
         checked += 1;
-        if let Err(message) = lint_one(&path, &base_resolver) {
+        if let Err(message) = lint_one(&path, &collection.root, &base_resolver) {
             issues.push(LintIssue { path, message });
         }
     }
@@ -311,11 +313,16 @@ fn lint(args: LintArgs, cwd: &Path) -> Result<()> {
     }
 }
 
-fn lint_one(path: &Path, base_resolver: &LayeredVariableResolver) -> Result<(), String> {
+fn lint_one(
+    path: &Path,
+    collection_root: &Path,
+    base_resolver: &LayeredVariableResolver,
+) -> Result<(), String> {
     let file = RequestFile::load(path).map_err(|err| err.to_string())?;
-    let unresolved = file.to_unresolved();
-    let resolver = base_resolver.clone().layer(unresolved.variables.clone());
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let chain = load_folder_chain(collection_root, base_dir).map_err(|err| err.to_string())?;
+    let unresolved = file.to_unresolved().with_folder_inheritance(&chain);
+    let resolver = base_resolver.clone().layer(unresolved.variables.clone());
     unresolved
         .resolve(&resolver, base_dir)
         .map(|_| ())
@@ -608,6 +615,34 @@ mod tests {
 
         let cli_err = err.downcast_ref::<CliError>().unwrap();
         assert!(matches!(cli_err, CliError::LintFailed(2)));
+    }
+
+    #[test]
+    fn lint_fails_a_request_whose_inherited_folder_auth_token_is_unresolvable() {
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        write(
+            dir.path(),
+            "auth/folder.toml",
+            "[auth]\ntype = \"bearer\"\ntoken = \"{{missing_token}}\"\n",
+        );
+        write(
+            dir.path(),
+            "auth/login.req.toml",
+            "[request]\nname = \"n\"\nmethod = \"GET\"\nurl = \"https://x.test\"\n",
+        );
+
+        let err = lint(
+            LintArgs {
+                env: None,
+                json: false,
+            },
+            dir.path(),
+        )
+        .unwrap_err();
+
+        let cli_err = err.downcast_ref::<CliError>().unwrap();
+        assert!(matches!(cli_err, CliError::LintFailed(1)));
     }
 
     #[test]

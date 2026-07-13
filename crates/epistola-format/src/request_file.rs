@@ -7,6 +7,7 @@ use epistola_core::{Body, Header, Method, Request, VariableResolver};
 use serde::{Deserialize, Serialize};
 
 use crate::error::FormatError;
+use crate::folder::FolderManifest;
 use crate::toml_file::{read_toml_file, write_toml_file};
 
 /// The full contents of a `.req.toml` request file.
@@ -27,8 +28,12 @@ pub struct RequestSpec {
     pub query: Vec<QueryEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub headers: Vec<HeaderEntry>,
-    #[serde(default, skip_serializing_if = "AuthSpec::is_none")]
-    pub auth: AuthSpec,
+    /// `None` (the key absent) means "no opinion, inherit from the nearest
+    /// ancestor `folder.toml`." `Some(AuthSpec::None)` (an explicit
+    /// `type = "none"`) blocks inheritance and sends no auth. See
+    /// [`UnresolvedRequest::with_folder_inheritance`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<AuthSpec>,
     #[serde(default, skip_serializing_if = "BodySpec::is_none")]
     pub body: BodySpec,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -69,12 +74,6 @@ pub enum AuthSpec {
         name: String,
         value: String,
     },
-}
-
-impl AuthSpec {
-    fn is_none(&self) -> bool {
-        matches!(self, AuthSpec::None)
-    }
 }
 
 /// Where an `apikey` auth's name/value pair is placed on the request.
@@ -160,7 +159,7 @@ impl MultipartPart {
 pub struct UnresolvedRequest {
     pub request: Request,
     pub body: BodySpec,
-    pub auth: AuthSpec,
+    pub auth: Option<AuthSpec>,
     pub variables: BTreeMap<String, String>,
 }
 
@@ -234,7 +233,7 @@ impl RequestFile {
                         disabled: false,
                     })
                     .collect(),
-                auth: AuthSpec::None,
+                auth: None,
                 body,
                 variables: BTreeMap::new(),
             },
@@ -282,6 +281,40 @@ impl RequestFile {
 }
 
 impl UnresolvedRequest {
+    /// Merges inherited `folder.toml` headers/auth (root-to-leaf order in
+    /// `chain`) into this request. Call between [`RequestFile::to_unresolved`]
+    /// and [`Self::resolve`] — merging has to happen on the still-unresolved,
+    /// uninterpolated values, same as everything else about `auth`/`body`.
+    ///
+    /// Headers: each level's (non-disabled) headers overwrite any
+    /// same-name (case-insensitive) header from an earlier level, so a
+    /// request's own headers always win over an inherited one, and an
+    /// inherited header from a closer folder wins over a farther one.
+    ///
+    /// Auth: the request's own `auth` (including an explicit `none`)
+    /// always wins outright. Only when the request has no opinion (`auth`
+    /// is `None`) does this walk `chain` leaf-to-root for the nearest
+    /// folder with an opinion.
+    #[must_use]
+    pub fn with_folder_inheritance(mut self, chain: &[FolderManifest]) -> Self {
+        let mut headers: Vec<Header> = Vec::new();
+        for folder in chain {
+            for h in folder.headers.iter().filter(|h| !h.disabled) {
+                upsert_header(&mut headers, &h.name, &h.value);
+            }
+        }
+        for h in self.request.headers.drain(..) {
+            upsert_header(&mut headers, &h.name, &h.value);
+        }
+        self.request.headers = headers;
+
+        if self.auth.is_none() {
+            self.auth = chain.iter().rev().find_map(|f| f.auth.clone());
+        }
+
+        self
+    }
+
     /// Interpolates, encodes the body, and folds `auth` into an
     /// `Authorization` header. Never injects a default `Content-Type` —
     /// except for `multipart`, whose `Content-Type` must carry the boundary
@@ -320,7 +353,7 @@ impl UnresolvedRequest {
             }
         };
 
-        match &self.auth {
+        match self.auth.as_ref().unwrap_or(&AuthSpec::None) {
             AuthSpec::None => {}
             AuthSpec::Bearer { token } => {
                 let token = epistola_core::interpolate(token, resolver)?;
@@ -351,6 +384,18 @@ impl UnresolvedRequest {
         }
 
         Ok(request)
+    }
+}
+
+/// Inserts `name: value`, overwriting any existing entry with the same
+/// name (case-insensitive) in place rather than appending a duplicate.
+fn upsert_header(headers: &mut Vec<Header>, name: &str, value: &str) {
+    match headers
+        .iter_mut()
+        .find(|h| h.name.eq_ignore_ascii_case(name))
+    {
+        Some(existing) => existing.value = value.to_string(),
+        None => headers.push(Header::new(name, value)),
     }
 }
 
@@ -458,7 +503,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(file.request.name, "List users");
-        assert!(matches!(file.request.auth, AuthSpec::None));
+        assert!(file.request.auth.is_none());
         assert!(matches!(file.request.body, BodySpec::None));
     }
 
@@ -552,7 +597,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert!(matches!(file.request.auth, AuthSpec::Bearer { .. }));
+        assert!(matches!(file.request.auth, Some(AuthSpec::Bearer { .. })));
     }
 
     #[test]
@@ -572,7 +617,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert!(matches!(file.request.auth, AuthSpec::ApiKey { .. }));
+        assert!(matches!(file.request.auth, Some(AuthSpec::ApiKey { .. })));
     }
 
     #[test]
@@ -1096,5 +1141,188 @@ mod tests {
 
         let loaded = RequestFile::load(&path).unwrap();
         assert_eq!(loaded.request.name, "Second");
+    }
+
+    fn folder_with_header(name: &str, value: &str) -> FolderManifest {
+        FolderManifest {
+            headers: vec![HeaderEntry {
+                name: name.to_string(),
+                value: value.to_string(),
+                disabled: false,
+            }],
+            auth: None,
+        }
+    }
+
+    #[test]
+    fn with_folder_inheritance_adds_headers_the_request_did_not_set() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "GET"
+            url = "https://x.test"
+            "#,
+        )
+        .unwrap();
+        let chain = vec![folder_with_header("X-Api-Version", "1")];
+        let unresolved = file.to_unresolved().with_folder_inheritance(&chain);
+
+        assert_eq!(unresolved.request.headers[0].name, "X-Api-Version");
+        assert_eq!(unresolved.request.headers[0].value, "1");
+    }
+
+    #[test]
+    fn with_folder_inheritance_lets_the_requests_own_header_win_by_name() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "GET"
+            url = "https://x.test"
+
+            [[request.headers]]
+            name = "x-api-version"
+            value = "2"
+            "#,
+        )
+        .unwrap();
+        let chain = vec![folder_with_header("X-Api-Version", "1")];
+        let unresolved = file.to_unresolved().with_folder_inheritance(&chain);
+
+        assert_eq!(unresolved.request.headers.len(), 1);
+        assert_eq!(unresolved.request.headers[0].value, "2");
+    }
+
+    #[test]
+    fn with_folder_inheritance_lets_a_closer_folder_win_over_a_farther_one() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "GET"
+            url = "https://x.test"
+            "#,
+        )
+        .unwrap();
+        let chain = vec![
+            folder_with_header("X-Api-Version", "root"),
+            folder_with_header("X-Api-Version", "nested"),
+        ];
+        let unresolved = file.to_unresolved().with_folder_inheritance(&chain);
+
+        assert_eq!(unresolved.request.headers.len(), 1);
+        assert_eq!(unresolved.request.headers[0].value, "nested");
+    }
+
+    #[test]
+    fn with_folder_inheritance_picks_the_nearest_ancestor_auth_when_the_request_has_none() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "GET"
+            url = "https://x.test"
+            "#,
+        )
+        .unwrap();
+        let chain = vec![
+            FolderManifest {
+                headers: Vec::new(),
+                auth: Some(AuthSpec::Bearer {
+                    token: "{{root_token}}".to_string(),
+                }),
+            },
+            FolderManifest {
+                headers: Vec::new(),
+                auth: Some(AuthSpec::Bearer {
+                    token: "{{nested_token}}".to_string(),
+                }),
+            },
+        ];
+        let unresolved = file.to_unresolved().with_folder_inheritance(&chain);
+
+        assert!(
+            matches!(unresolved.auth, Some(AuthSpec::Bearer { ref token }) if token == "{{nested_token}}")
+        );
+    }
+
+    #[test]
+    fn with_folder_inheritance_leaves_the_requests_own_auth_untouched() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "GET"
+            url = "https://x.test"
+
+            [request.auth]
+            type = "bearer"
+            token = "{{own_token}}"
+            "#,
+        )
+        .unwrap();
+        let chain = vec![FolderManifest {
+            headers: Vec::new(),
+            auth: Some(AuthSpec::Bearer {
+                token: "{{folder_token}}".to_string(),
+            }),
+        }];
+        let unresolved = file.to_unresolved().with_folder_inheritance(&chain);
+
+        assert!(
+            matches!(unresolved.auth, Some(AuthSpec::Bearer { ref token }) if token == "{{own_token}}")
+        );
+    }
+
+    #[test]
+    fn with_folder_inheritance_honors_an_explicit_none_and_blocks_inheritance() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "GET"
+            url = "https://x.test"
+
+            [request.auth]
+            type = "none"
+            "#,
+        )
+        .unwrap();
+        let chain = vec![FolderManifest {
+            headers: Vec::new(),
+            auth: Some(AuthSpec::Bearer {
+                token: "{{token}}".to_string(),
+            }),
+        }];
+        let unresolved = file.to_unresolved().with_folder_inheritance(&chain);
+        let request = unresolved.resolve(&resolver(&[]), Path::new(".")).unwrap();
+
+        assert!(!request
+            .headers
+            .iter()
+            .any(|h| h.name.eq_ignore_ascii_case("authorization")));
+    }
+
+    #[test]
+    fn with_folder_inheritance_is_a_noop_with_an_empty_chain() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "GET"
+            url = "https://x.test"
+
+            [[request.headers]]
+            name = "X-Own"
+            value = "1"
+            "#,
+        )
+        .unwrap();
+        let unresolved = file.to_unresolved().with_folder_inheritance(&[]);
+
+        assert_eq!(unresolved.request.headers.len(), 1);
+        assert_eq!(unresolved.request.headers[0].name, "X-Own");
+        assert!(unresolved.auth.is_none());
     }
 }

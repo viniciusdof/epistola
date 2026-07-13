@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::commands::{completions, env, init, request, run};
+use crate::commands::{completions, env, folder, init, request, run};
 
 /// A Rust-native HTTP client, built for the terminal.
 #[derive(Parser, Debug)]
@@ -18,6 +18,8 @@ pub enum Command {
     Request(request::RequestArgs),
     /// Manage environments in the current collection
     Env(env::EnvArgs),
+    /// Manage folder-level header/auth inheritance (`folder.toml`)
+    Folder(folder::FolderArgs),
     /// Resolve and execute a saved request
     Run(run::RunArgs),
     /// Generate a shell completion script, printed to stdout

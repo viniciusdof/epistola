@@ -8,6 +8,7 @@ mod collection;
 mod discovery;
 mod environment;
 mod error;
+mod folder;
 mod global_config;
 mod loader;
 mod request_file;
@@ -21,6 +22,7 @@ pub use environment::{
     set_environment_variable,
 };
 pub use error::FormatError;
+pub use folder::{load_folder_chain, FolderManifest};
 pub use global_config::load_global_config;
 pub use loader::LoadedCollection;
 pub use request_file::{
