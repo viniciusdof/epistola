@@ -1,17 +1,30 @@
+use std::path::Path;
+
 use epistola_core::{Header, Request, Response};
 
 /// Status line, headers, blank line, then body (pretty JSON if applicable).
 pub fn format_response(response: &Response) -> String {
+    let mut out = format_response_head(response);
+    out.push_str(&format_body(response));
+    out.push('\n');
+    out
+}
+
+/// Status line and headers only (no body) — used when the body is instead
+/// written to a file via `--output`.
+pub fn format_response_head(response: &Response) -> String {
     let mut out = format!("HTTP {} ({:.0?})\n", response.status, response.duration);
 
     for header in &response.headers {
         out.push_str(&format!("{}: {}\n", header.name, header.value));
     }
     out.push('\n');
-
-    out.push_str(&format_body(response));
-    out.push('\n');
     out
+}
+
+/// Writes the response body's raw bytes to `path`, unchanged.
+pub fn write_response_body(response: &Response, path: &Path) -> std::io::Result<()> {
+    std::fs::write(path, &response.body)
 }
 
 fn format_body(response: &Response) -> String {
@@ -136,6 +149,21 @@ mod tests {
         let out = format_response(&response(headers, b"ok"));
         assert!(out.starts_with("HTTP 200"));
         assert!(out.contains("x-test: epistola"));
+    }
+
+    #[test]
+    fn format_response_head_omits_the_body() {
+        let out = format_response_head(&response(Vec::new(), b"secret-body"));
+        assert!(out.starts_with("HTTP 200"));
+        assert!(!out.contains("secret-body"));
+    }
+
+    #[test]
+    fn write_response_body_writes_the_raw_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("body.bin");
+        write_response_body(&response(Vec::new(), &[0xff, 0x00, 0x42]), &path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), vec![0xff, 0x00, 0x42]);
     }
 
     #[test]

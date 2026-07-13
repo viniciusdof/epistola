@@ -16,6 +16,10 @@ pub struct CollectionManifest {
     pub variables: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "ClientSpec::is_default")]
     pub client: ClientSpec,
+    /// Environment `run`/`request show --resolved` fall back to when
+    /// `--env` isn't given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_environment: Option<String>,
 }
 
 impl CollectionManifest {
@@ -35,8 +39,14 @@ impl CollectionManifest {
             description: description.map(str::to_string),
             variables: BTreeMap::new(),
             client: ClientSpec::default(),
+            default_environment: None,
         };
         write_toml_file(path, &manifest)
+    }
+
+    /// Overwrites `path` with `self`'s current contents.
+    pub fn save(&self, path: &Path) -> Result<(), FormatError> {
+        write_toml_file(path, self)
     }
 }
 
@@ -142,5 +152,35 @@ mod tests {
         assert!(matches!(err, FormatError::AlreadyExists { .. }));
         // the original file must be untouched
         assert_eq!(CollectionManifest::load(&path).unwrap().name, "First");
+    }
+
+    #[test]
+    fn create_defaults_default_environment_to_none() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("epistola.toml");
+        CollectionManifest::create(&path, "n", None).unwrap();
+        assert_eq!(
+            CollectionManifest::load(&path).unwrap().default_environment,
+            None
+        );
+    }
+
+    #[test]
+    fn save_overwrites_the_manifest_in_place() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("epistola.toml");
+        CollectionManifest::create(&path, "n", None).unwrap();
+
+        let mut manifest = CollectionManifest::load(&path).unwrap();
+        manifest.default_environment = Some("dev".to_string());
+        manifest.save(&path).unwrap();
+
+        assert_eq!(
+            CollectionManifest::load(&path)
+                .unwrap()
+                .default_environment
+                .as_deref(),
+            Some("dev")
+        );
     }
 }

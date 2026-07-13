@@ -62,6 +62,66 @@ pub fn set_environment_variable(
     Ok(path)
 }
 
+/// Deletes `environments/<name>.toml` and its `.secrets.toml` sidecar (if
+/// present). Errors with `EnvironmentNotFound` if neither file exists.
+pub fn delete_environment(collection_root: &Path, name: &str) -> Result<(), FormatError> {
+    let public = public_path(collection_root, name);
+    let secrets = secrets_path(collection_root, name);
+    if !public.is_file() && !secrets.is_file() {
+        return Err(FormatError::EnvironmentNotFound {
+            name: name.to_string(),
+            path: public,
+        });
+    }
+    for path in [&public, &secrets] {
+        if path.is_file() {
+            std::fs::remove_file(path).map_err(|source| FormatError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Renames an environment's public/secrets files from `old_name` to
+/// `new_name`. Errors with `EnvironmentNotFound` if `old_name` doesn't
+/// exist, or `AlreadyExists` if `new_name` already does.
+pub fn rename_environment(
+    collection_root: &Path,
+    old_name: &str,
+    new_name: &str,
+) -> Result<(), FormatError> {
+    let old_public = public_path(collection_root, old_name);
+    let old_secrets = secrets_path(collection_root, old_name);
+    if !old_public.is_file() && !old_secrets.is_file() {
+        return Err(FormatError::EnvironmentNotFound {
+            name: old_name.to_string(),
+            path: old_public,
+        });
+    }
+
+    let new_public = public_path(collection_root, new_name);
+    let new_secrets = secrets_path(collection_root, new_name);
+    if new_public.is_file() || new_secrets.is_file() {
+        return Err(FormatError::AlreadyExists { path: new_public });
+    }
+
+    if old_public.is_file() {
+        std::fs::rename(&old_public, &new_public).map_err(|source| FormatError::Io {
+            path: old_public,
+            source,
+        })?;
+    }
+    if old_secrets.is_file() {
+        std::fs::rename(&old_secrets, &new_secrets).map_err(|source| FormatError::Io {
+            path: old_secrets,
+            source,
+        })?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -180,5 +240,56 @@ mod tests {
         let vars = load_environment(dir.path(), "dev").unwrap();
         assert_eq!(vars.get("a").map(String::as_str), Some("updated"));
         assert_eq!(vars.get("b").map(String::as_str), Some("2"));
+    }
+
+    #[test]
+    fn delete_environment_removes_the_public_and_secrets_files() {
+        let dir = tempdir().unwrap();
+        set_environment_variable(dir.path(), "dev", "k", "v", false).unwrap();
+        set_environment_variable(dir.path(), "dev", "token", "s3cr3t", true).unwrap();
+
+        delete_environment(dir.path(), "dev").unwrap();
+
+        assert!(!public_path(dir.path(), "dev").is_file());
+        assert!(!secrets_path(dir.path(), "dev").is_file());
+    }
+
+    #[test]
+    fn delete_environment_errors_when_the_named_environment_is_missing() {
+        let dir = tempdir().unwrap();
+        let err = delete_environment(dir.path(), "prod").unwrap_err();
+        assert!(matches!(err, FormatError::EnvironmentNotFound { name, .. } if name == "prod"));
+    }
+
+    #[test]
+    fn rename_environment_moves_both_files_and_preserves_content() {
+        let dir = tempdir().unwrap();
+        set_environment_variable(dir.path(), "dev", "k", "v", false).unwrap();
+        set_environment_variable(dir.path(), "dev", "token", "s3cr3t", true).unwrap();
+
+        rename_environment(dir.path(), "dev", "staging").unwrap();
+
+        assert!(!public_path(dir.path(), "dev").is_file());
+        assert!(!secrets_path(dir.path(), "dev").is_file());
+        let vars = load_environment(dir.path(), "staging").unwrap();
+        assert_eq!(vars.get("k").map(String::as_str), Some("v"));
+        assert_eq!(vars.get("token").map(String::as_str), Some("s3cr3t"));
+    }
+
+    #[test]
+    fn rename_environment_errors_when_the_source_is_missing() {
+        let dir = tempdir().unwrap();
+        let err = rename_environment(dir.path(), "dev", "staging").unwrap_err();
+        assert!(matches!(err, FormatError::EnvironmentNotFound { name, .. } if name == "dev"));
+    }
+
+    #[test]
+    fn rename_environment_errors_when_the_target_already_exists() {
+        let dir = tempdir().unwrap();
+        create_environment(dir.path(), "dev").unwrap();
+        create_environment(dir.path(), "staging").unwrap();
+
+        let err = rename_environment(dir.path(), "dev", "staging").unwrap_err();
+        assert!(matches!(err, FormatError::AlreadyExists { .. }));
     }
 }

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use epistola_format::{LoadedCollection, RequestFile};
 
@@ -22,6 +22,10 @@ pub enum RequestAction {
     Show(ShowArgs),
     /// Check that a request file parses
     Validate(ValidateArgs),
+    /// Delete a request file
+    Delete(DeleteArgs),
+    /// Rename a request, updating both its file name and its `name` field
+    Rename(RenameArgs),
 }
 
 #[derive(Args, Debug)]
@@ -60,12 +64,25 @@ pub struct ValidateArgs {
     pub path: PathBuf,
 }
 
+#[derive(Args, Debug)]
+pub struct DeleteArgs {
+    pub path: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct RenameArgs {
+    pub path: PathBuf,
+    pub name: String,
+}
+
 pub fn run(args: RequestArgs, cwd: &Path) -> Result<()> {
     match args.action {
         RequestAction::New(a) => new(a, cwd),
         RequestAction::List(a) => list(a, cwd),
         RequestAction::Show(a) => show(a),
         RequestAction::Validate(a) => validate(a),
+        RequestAction::Delete(a) => delete(a),
+        RequestAction::Rename(a) => rename(a),
     }
 }
 
@@ -232,6 +249,41 @@ fn validate(args: ValidateArgs) -> Result<()> {
     RequestFile::load(&args.path)
         .with_context(|| format!("'{}' is not a valid request file", args.path.display()))?;
     println!("{} is valid", args.path.display());
+    Ok(())
+}
+
+fn delete(args: DeleteArgs) -> Result<()> {
+    if !args.path.is_file() {
+        bail!("'{}' does not exist", args.path.display());
+    }
+    std::fs::remove_file(&args.path)
+        .with_context(|| format!("failed to delete '{}'", args.path.display()))?;
+    println!("Deleted {}", args.path.display());
+    Ok(())
+}
+
+fn rename(args: RenameArgs) -> Result<()> {
+    let mut file = RequestFile::load(&args.path)
+        .with_context(|| format!("failed to load '{}'", args.path.display()))?;
+    file.request.name = args.name.clone();
+
+    let dir = args
+        .path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let new_path = dir.join(format!("{}.req.toml", slugify(&args.name)));
+
+    if new_path == args.path {
+        file.save_at(&args.path)
+            .with_context(|| format!("failed to save '{}'", args.path.display()))?;
+    } else {
+        file.create_at(&new_path)
+            .with_context(|| format!("failed to create '{}'", new_path.display()))?;
+        std::fs::remove_file(&args.path)
+            .with_context(|| format!("failed to remove '{}'", args.path.display()))?;
+    }
+
+    println!("Renamed {} to {}", args.path.display(), new_path.display());
     Ok(())
 }
 
@@ -409,5 +461,59 @@ mod tests {
             path: dir.path().join("nope.req.toml")
         })
         .is_err());
+    }
+
+    #[test]
+    fn delete_removes_the_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("a.req.toml");
+        RequestFile::create(&path, "A", "GET", "https://x.test").unwrap();
+
+        delete(DeleteArgs { path: path.clone() }).unwrap();
+
+        assert!(!path.is_file());
+    }
+
+    #[test]
+    fn delete_errors_when_the_file_is_missing() {
+        let dir = tempdir().unwrap();
+        assert!(delete(DeleteArgs {
+            path: dir.path().join("nope.req.toml")
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn rename_moves_the_file_and_updates_the_name_field() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("a.req.toml");
+        RequestFile::create(&path, "A", "GET", "https://x.test").unwrap();
+
+        rename(RenameArgs {
+            path: path.clone(),
+            name: "List Users".to_string(),
+        })
+        .unwrap();
+
+        assert!(!path.is_file());
+        let new_path = dir.path().join("list-users.req.toml");
+        let file = RequestFile::load(&new_path).unwrap();
+        assert_eq!(file.request.name, "List Users");
+    }
+
+    #[test]
+    fn rename_to_the_same_slug_overwrites_in_place() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("a.req.toml");
+        RequestFile::create(&path, "A", "GET", "https://x.test").unwrap();
+
+        rename(RenameArgs {
+            path: path.clone(),
+            name: "A".to_string(),
+        })
+        .unwrap();
+
+        let file = RequestFile::load(&path).unwrap();
+        assert_eq!(file.request.name, "A");
     }
 }

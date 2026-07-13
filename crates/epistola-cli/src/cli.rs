@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Result};
 use clap::Parser;
@@ -37,6 +37,14 @@ pub struct Cli {
     /// Save this request into the current collection as `<NAME>.req.toml`
     #[arg(long)]
     pub save: Option<String>,
+
+    /// Write the raw response body to this file instead of printing it
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+
+    /// Exit with a non-zero status if the response status is >= 400
+    #[arg(long)]
+    pub check_status: bool,
 
     #[command(flatten)]
     pub client: ClientArgs,

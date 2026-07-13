@@ -8,6 +8,7 @@ use epistola_format::{LoadedCollection, RequestFile};
 use epistola_http::ReqwestExecutor;
 
 use crate::client_config::ClientArgs;
+use crate::errors::CliError;
 use crate::output;
 
 #[derive(Args, Debug)]
@@ -24,6 +25,14 @@ pub struct RunArgs {
 
     #[arg(long)]
     pub json: bool,
+
+    /// Write the raw response body to this file instead of printing it
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+
+    /// Exit with a non-zero status if the response status is >= 400
+    #[arg(long)]
+    pub check_status: bool,
 
     #[command(flatten)]
     pub client: ClientArgs,
@@ -51,13 +60,22 @@ pub async fn run(args: RunArgs) -> Result<()> {
         .context("invalid client configuration")?;
     let response = executor.execute(&request).await.context("request failed")?;
 
-    if args.json {
+    if let Some(path) = &args.output {
+        output::write_response_body(&response, path)
+            .with_context(|| format!("failed to write response body to '{}'", path.display()))?;
+        print!("{}", output::format_response_head(&response));
+        println!("Saved {} bytes to {}", response.body.len(), path.display());
+    } else if args.json {
         println!(
             "{}",
             serde_json::to_string_pretty(&output::response_to_json(&response))?
         );
     } else {
         print!("{}", output::format_response(&response));
+    }
+
+    if args.check_status && response.status >= 400 {
+        return Err(CliError::HttpStatus(response.status).into());
     }
 
     Ok(())
@@ -136,6 +154,8 @@ mod tests {
             env: Some("dev".to_string()),
             vars: vec!["greeting=hi".to_string()],
             json: false,
+            output: None,
+            check_status: false,
             client: ClientArgs::default(),
         };
 
@@ -157,9 +177,111 @@ mod tests {
             env: None,
             vars: Vec::new(),
             json: false,
+            output: None,
+            check_status: false,
             client: ClientArgs::default(),
         };
 
         assert!(run(args).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn output_flag_writes_the_body_to_a_file_and_omits_it_from_stdout() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"raw-bytes".to_vec()))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        write(
+            dir.path(),
+            "a.req.toml",
+            &format!(
+                "[request]\nname = \"n\"\nmethod = \"GET\"\nurl = \"{}\"\n",
+                server.uri()
+            ),
+        );
+
+        let output_path = dir.path().join("out.bin");
+        let args = RunArgs {
+            path: dir.path().join("a.req.toml"),
+            env: None,
+            vars: Vec::new(),
+            json: false,
+            output: Some(output_path.clone()),
+            check_status: false,
+            client: ClientArgs::default(),
+        };
+
+        run(args).await.unwrap();
+
+        assert_eq!(std::fs::read(&output_path).unwrap(), b"raw-bytes");
+    }
+
+    #[tokio::test]
+    async fn check_status_errors_on_a_4xx_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        write(
+            dir.path(),
+            "a.req.toml",
+            &format!(
+                "[request]\nname = \"n\"\nmethod = \"GET\"\nurl = \"{}\"\n",
+                server.uri()
+            ),
+        );
+
+        let args = RunArgs {
+            path: dir.path().join("a.req.toml"),
+            env: None,
+            vars: Vec::new(),
+            json: false,
+            output: None,
+            check_status: true,
+            client: ClientArgs::default(),
+        };
+
+        let err = run(args).await.unwrap_err();
+        assert!(err.downcast_ref::<CliError>().is_some());
+    }
+
+    #[tokio::test]
+    async fn check_status_does_not_error_on_a_2xx_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        write(
+            dir.path(),
+            "a.req.toml",
+            &format!(
+                "[request]\nname = \"n\"\nmethod = \"GET\"\nurl = \"{}\"\n",
+                server.uri()
+            ),
+        );
+
+        let args = RunArgs {
+            path: dir.path().join("a.req.toml"),
+            env: None,
+            vars: Vec::new(),
+            json: false,
+            output: None,
+            check_status: true,
+            client: ClientArgs::default(),
+        };
+
+        run(args).await.unwrap();
     }
 }

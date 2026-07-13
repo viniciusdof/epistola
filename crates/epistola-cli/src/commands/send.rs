@@ -8,12 +8,15 @@ use epistola_http::ReqwestExecutor;
 
 use crate::cli::Cli;
 use crate::commands::request::slugify;
+use crate::errors::CliError;
 use crate::output;
 
 /// Ad-hoc, httpie-style request: `epistola GET <url> -H ... -q ... -d ...`
 pub async fn run(args: Vec<String>, cwd: &Path) -> Result<()> {
     let cli = Cli::try_parse_from(std::iter::once("epistola".to_string()).chain(args))?;
     let save_as = cli.save.clone();
+    let output_path = cli.output.clone();
+    let check_status = cli.check_status;
     // Computed before `into_request` consumes `cli`; a `multipart` body
     // can't be reconstructed from its already-encoded bytes, so `--save`
     // needs the pre-encoding structure.
@@ -34,13 +37,24 @@ pub async fn run(args: Vec<String>, cwd: &Path) -> Result<()> {
         ReqwestExecutor::with_config(client_config).context("invalid client configuration")?;
     let response = executor.execute(&request).await.context("request failed")?;
 
-    print!("{}", output::format_response(&response));
+    if let Some(path) = &output_path {
+        output::write_response_body(&response, path)
+            .with_context(|| format!("failed to write response body to '{}'", path.display()))?;
+        print!("{}", output::format_response_head(&response));
+        println!("Saved {} bytes to {}", response.body.len(), path.display());
+    } else {
+        print!("{}", output::format_response(&response));
+    }
 
     if let (Some(name), Some(path)) = (&save_as, &save_path) {
         RequestFile::from_request_and_body(name, &request, body_spec)
             .create_at(path)
             .with_context(|| format!("failed to save request to '{}'", path.display()))?;
         println!("Saved to {}", path.display());
+    }
+
+    if check_status && response.status >= 400 {
+        return Err(CliError::HttpStatus(response.status).into());
     }
 
     Ok(())
@@ -194,5 +208,56 @@ mod tests {
         std::fs::write(dir.path().join("taken.req.toml"), "").unwrap();
 
         assert!(prepare_save_path("Taken", dir.path()).is_err());
+    }
+
+    #[tokio::test]
+    async fn output_flag_writes_the_body_to_a_file() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"raw-bytes".to_vec()))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+
+        let output_path = dir.path().join("out.bin");
+        run(
+            vec![
+                "GET".to_string(),
+                server.uri(),
+                "--output".to_string(),
+                output_path.to_string_lossy().into_owned(),
+            ],
+            dir.path(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(std::fs::read(&output_path).unwrap(), b"raw-bytes");
+    }
+
+    #[tokio::test]
+    async fn check_status_errors_on_a_4xx_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+
+        let err = run(
+            vec![
+                "GET".to_string(),
+                server.uri(),
+                "--check-status".to_string(),
+            ],
+            dir.path(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.downcast_ref::<crate::errors::CliError>().is_some());
     }
 }

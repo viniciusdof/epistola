@@ -24,7 +24,8 @@ impl LoadedCollection {
     }
 
     /// Resolver seeded with global config, collection variables, and (if
-    /// given) the named environment — low to high precedence. Callers layer
+    /// given, falling back to the collection's `default_environment`) the
+    /// named environment — low to high precedence. Callers layer
     /// request-level/CLI overrides on top via `.layer(...)`.
     pub fn resolver_for_environment(
         &self,
@@ -34,6 +35,7 @@ impl LoadedCollection {
             .layer(load_global_config()?)
             .layer(self.manifest.variables.clone());
 
+        let environment = environment.or(self.manifest.default_environment.as_deref());
         if let Some(name) = environment {
             resolver = resolver.layer(load_environment(&self.root, name)?);
         }
@@ -99,6 +101,49 @@ mod tests {
         let loaded = LoadedCollection::discover_from(dir.path()).unwrap();
         let resolver = loaded.resolver_for_environment(None).unwrap();
         assert_eq!(resolver.resolve("k").as_deref(), Some("collection"));
+    }
+
+    #[test]
+    fn resolver_falls_back_to_the_manifest_default_environment() {
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "epistola.toml",
+            "name = \"n\"\ndefault_environment = \"dev\"\n",
+        );
+        write(
+            dir.path(),
+            "environments/dev.toml",
+            "[variables]\nk = \"env\"\n",
+        );
+
+        let loaded = LoadedCollection::discover_from(dir.path()).unwrap();
+        let resolver = loaded.resolver_for_environment(None).unwrap();
+        assert_eq!(resolver.resolve("k").as_deref(), Some("env"));
+    }
+
+    #[test]
+    fn resolver_explicit_environment_overrides_the_manifest_default() {
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "epistola.toml",
+            "name = \"n\"\ndefault_environment = \"dev\"\n",
+        );
+        write(
+            dir.path(),
+            "environments/dev.toml",
+            "[variables]\nk = \"dev\"\n",
+        );
+        write(
+            dir.path(),
+            "environments/prod.toml",
+            "[variables]\nk = \"prod\"\n",
+        );
+
+        let loaded = LoadedCollection::discover_from(dir.path()).unwrap();
+        let resolver = loaded.resolver_for_environment(Some("prod")).unwrap();
+        assert_eq!(resolver.resolve("k").as_deref(), Some("prod"));
     }
 
     #[test]

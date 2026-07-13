@@ -16,7 +16,10 @@ mod variables_file;
 
 pub use collection::{ClientSpec, CollectionManifest};
 pub use discovery::find_collection_root;
-pub use environment::{create_environment, load_environment, set_environment_variable};
+pub use environment::{
+    create_environment, delete_environment, load_environment, rename_environment,
+    set_environment_variable,
+};
 pub use error::FormatError;
 pub use global_config::load_global_config;
 pub use loader::LoadedCollection;

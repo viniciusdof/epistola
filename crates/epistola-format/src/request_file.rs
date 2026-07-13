@@ -251,6 +251,11 @@ impl RequestFile {
         write_toml_file(path, self)
     }
 
+    /// Overwrites `path` with `self`'s current contents.
+    pub fn save_at(&self, path: &Path) -> Result<(), FormatError> {
+        write_toml_file(path, self)
+    }
+
     /// Converts to an [`UnresolvedRequest`], dropping disabled headers/query.
     pub fn to_unresolved(&self) -> UnresolvedRequest {
         let method = self
@@ -1074,5 +1079,22 @@ mod tests {
             .create_at(&path)
             .unwrap_err();
         assert!(matches!(err, FormatError::AlreadyExists { .. }));
+    }
+
+    #[test]
+    fn save_at_overwrites_an_existing_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("ad-hoc.req.toml");
+        let request = Request::get("https://x.test");
+        RequestFile::from_request("First", &request)
+            .create_at(&path)
+            .unwrap();
+
+        RequestFile::from_request("Second", &request)
+            .save_at(&path)
+            .unwrap();
+
+        let loaded = RequestFile::load(&path).unwrap();
+        assert_eq!(loaded.request.name, "Second");
     }
 }
