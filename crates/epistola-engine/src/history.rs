@@ -1,9 +1,9 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
 use epistola_core::{Request, Response};
 
+use crate::error::EngineError;
 use crate::output::{request_to_json, response_to_json};
 
 /// Path to a collection's history log, relative to its root. Created
@@ -15,11 +15,17 @@ pub fn log_path(collection_root: &Path) -> PathBuf {
 
 /// Appends one entry, creating `.epistola/` and the log file on first
 /// write. Never truncates or rewrites existing lines.
-pub fn append_entry(collection_root: &Path, request: &Request, response: &Response) -> Result<()> {
+pub fn append_entry(
+    collection_root: &Path,
+    request: &Request,
+    response: &Response,
+) -> Result<(), EngineError> {
     let path = log_path(collection_root);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create '{}'", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|source| EngineError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
     }
 
     let entry = serde_json::json!({
@@ -32,38 +38,41 @@ pub fn append_entry(collection_root: &Path, request: &Request, response: &Respon
         .create(true)
         .append(true)
         .open(&path)
-        .with_context(|| format!("failed to open '{}'", path.display()))?;
+        .map_err(|source| EngineError::Io {
+            path: path.clone(),
+            source,
+        })?;
     writeln!(file, "{}", serde_json::to_string(&entry)?)
-        .with_context(|| format!("failed to write to '{}'", path.display()))
+        .map_err(|source| EngineError::Io { path, source })
 }
 
 /// Reads back every logged entry, most-recent-first (`entries[0]` is the
 /// last request run — the index `history show` calls "1"). An empty `Vec`
 /// if the log doesn't exist yet.
-pub fn read_entries(collection_root: &Path) -> Result<Vec<serde_json::Value>> {
+pub fn read_entries(collection_root: &Path) -> Result<Vec<serde_json::Value>, EngineError> {
     let path = log_path(collection_root);
     if !path.is_file() {
         return Ok(Vec::new());
     }
 
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read '{}'", path.display()))?;
+    let content = std::fs::read_to_string(&path).map_err(|source| EngineError::Io {
+        path: path.clone(),
+        source,
+    })?;
     let mut entries = content
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(serde_json::from_str)
-        .collect::<Result<Vec<serde_json::Value>, _>>()
-        .with_context(|| format!("failed to parse '{}'", path.display()))?;
+        .collect::<Result<Vec<serde_json::Value>, _>>()?;
     entries.reverse();
     Ok(entries)
 }
 
 /// Deletes the log file; a no-op if it doesn't exist.
-pub fn clear(collection_root: &Path) -> Result<()> {
+pub fn clear(collection_root: &Path) -> Result<(), EngineError> {
     let path = log_path(collection_root);
     if path.is_file() {
-        std::fs::remove_file(&path)
-            .with_context(|| format!("failed to remove '{}'", path.display()))?;
+        std::fs::remove_file(&path).map_err(|source| EngineError::Io { path, source })?;
     }
     Ok(())
 }
@@ -171,5 +180,13 @@ mod tests {
         let entries = read_entries(dir.path()).unwrap();
         assert_eq!(entries[0]["response"]["body"], "ok");
         assert_eq!(entries[0]["response"]["status"], 200);
+    }
+
+    #[test]
+    fn append_entry_fails_when_the_dot_epistola_path_is_a_file() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".epistola"), "not a directory").unwrap();
+
+        assert!(append_entry(dir.path(), &request(), &response()).is_err());
     }
 }

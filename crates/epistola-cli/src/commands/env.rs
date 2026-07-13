@@ -1,12 +1,8 @@
-use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Args, Subcommand};
-use epistola_format::{
-    create_environment, delete_environment, load_environment, rename_environment,
-    set_environment_variable, LoadedCollection,
-};
+use epistola_engine::environments;
 
 #[derive(Args, Debug)]
 pub struct EnvArgs {
@@ -79,36 +75,8 @@ pub fn run(args: EnvArgs, cwd: &Path) -> Result<()> {
     }
 }
 
-fn collection_root(cwd: &Path) -> Result<PathBuf> {
-    Ok(current_collection(cwd)?.root)
-}
-
-fn current_collection(cwd: &Path) -> Result<LoadedCollection> {
-    LoadedCollection::discover_from(cwd)
-        .context("not inside a collection (no epistola.toml found in this or any parent directory)")
-}
-
-fn manifest_path(root: &Path) -> PathBuf {
-    root.join("epistola.toml")
-}
-
-/// Clears `default_environment` in the manifest if it currently points at
-/// `name`, so deleting/renaming an environment never leaves a dangling
-/// default behind.
-fn clear_default_if(collection: &LoadedCollection, name: &str) -> Result<()> {
-    if collection.manifest.default_environment.as_deref() != Some(name) {
-        return Ok(());
-    }
-    let mut manifest = collection.manifest.clone();
-    manifest.default_environment = None;
-    manifest
-        .save(&manifest_path(&collection.root))
-        .context("failed to update the collection manifest")
-}
-
 fn new(args: NewArgs, cwd: &Path) -> Result<()> {
-    let root = collection_root(cwd)?;
-    let path = create_environment(&root, &args.name)
+    let path = environments::new_environment(cwd, &args.name)
         .with_context(|| format!("failed to create environment '{}'", args.name))?;
     println!("Created {}", path.display());
     Ok(())
@@ -122,8 +90,7 @@ fn set(args: SetArgs, cwd: &Path) -> Result<()> {
         )
     })?;
 
-    let root = collection_root(cwd)?;
-    let path = set_environment_variable(&root, &args.name, key, value, args.secret)
+    let path = environments::set_variable(cwd, &args.name, key, value, args.secret)
         .with_context(|| format!("failed to set '{key}' in environment '{}'", args.name))?;
 
     println!("Set {key} in {}", path.display());
@@ -131,25 +98,7 @@ fn set(args: SetArgs, cwd: &Path) -> Result<()> {
 }
 
 fn list(args: ListArgs, cwd: &Path) -> Result<()> {
-    let root = collection_root(cwd)?;
-    let environments_dir = root.join("environments");
-
-    let mut names = BTreeSet::new();
-    if environments_dir.is_dir() {
-        for entry in std::fs::read_dir(&environments_dir)
-            .with_context(|| format!("failed to read '{}'", environments_dir.display()))?
-        {
-            let file_name = entry?.file_name();
-            let file_name = file_name.to_string_lossy();
-            // Longest suffix first, so dev.toml/dev.secrets.toml dedupe to "dev".
-            let base = file_name
-                .strip_suffix(".secrets.toml")
-                .or_else(|| file_name.strip_suffix(".toml"));
-            if let Some(base) = base {
-                names.insert(base.to_string());
-            }
-        }
-    }
+    let names = environments::list_environment_names(cwd)?;
 
     if args.json {
         let json: Vec<_> = names
@@ -169,54 +118,34 @@ fn list(args: ListArgs, cwd: &Path) -> Result<()> {
 }
 
 fn delete(args: DeleteArgs, cwd: &Path) -> Result<()> {
-    let collection = current_collection(cwd)?;
-    delete_environment(&collection.root, &args.name)
+    environments::delete(cwd, &args.name)
         .with_context(|| format!("failed to delete environment '{}'", args.name))?;
-    clear_default_if(&collection, &args.name)?;
     println!("Deleted environment '{}'", args.name);
     Ok(())
 }
 
 fn rename(args: RenameArgs, cwd: &Path) -> Result<()> {
-    let collection = current_collection(cwd)?;
-    rename_environment(&collection.root, &args.name, &args.new_name).with_context(|| {
+    environments::rename(cwd, &args.name, &args.new_name).with_context(|| {
         format!(
             "failed to rename environment '{}' to '{}'",
             args.name, args.new_name
         )
     })?;
-
-    if collection.manifest.default_environment.as_deref() == Some(args.name.as_str()) {
-        let mut manifest = collection.manifest.clone();
-        manifest.default_environment = Some(args.new_name.clone());
-        manifest
-            .save(&manifest_path(&collection.root))
-            .context("failed to update the collection manifest")?;
-    }
-
     println!("Renamed environment '{}' to '{}'", args.name, args.new_name);
     Ok(())
 }
 
 fn default(args: DefaultArgs, cwd: &Path) -> Result<()> {
-    let collection = current_collection(cwd)?;
-
     let Some(name) = args.name else {
-        match &collection.manifest.default_environment {
+        match environments::get_default(cwd)? {
             Some(name) => println!("{name}"),
             None => println!("No default environment set."),
         }
         return Ok(());
     };
 
-    load_environment(&collection.root, &name)
+    environments::set_default(cwd, &name)
         .with_context(|| format!("failed to set default environment to '{name}'"))?;
-
-    let mut manifest = collection.manifest.clone();
-    manifest.default_environment = Some(name.clone());
-    manifest
-        .save(&manifest_path(&collection.root))
-        .context("failed to update the collection manifest")?;
 
     println!("Default environment set to '{name}'");
     Ok(())
@@ -271,79 +200,9 @@ mod tests {
     }
 
     #[test]
-    fn set_creates_the_public_file_by_default() {
-        let dir = tempdir().unwrap();
-        epistola_format::CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None)
-            .unwrap();
-
-        let args = SetArgs {
-            name: "dev".to_string(),
-            assignment: "k=v".to_string(),
-            secret: false,
-        };
-        set(args, dir.path()).unwrap();
-
-        assert!(dir.path().join("environments/dev.toml").is_file());
-        assert!(!dir.path().join("environments/dev.secrets.toml").is_file());
-    }
-
-    #[test]
-    fn set_with_secret_writes_the_sidecar() {
-        let dir = tempdir().unwrap();
-        epistola_format::CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None)
-            .unwrap();
-
-        let args = SetArgs {
-            name: "dev".to_string(),
-            assignment: "k=v".to_string(),
-            secret: true,
-        };
-        set(args, dir.path()).unwrap();
-
-        assert!(dir.path().join("environments/dev.secrets.toml").is_file());
-        assert!(!dir.path().join("environments/dev.toml").is_file());
-    }
-
-    #[test]
     fn list_errors_outside_a_collection() {
         let dir = tempdir().unwrap();
         assert!(list(ListArgs { json: false }, dir.path()).is_err());
-    }
-
-    #[test]
-    fn list_deduplicates_public_and_secrets_files_for_the_same_environment() {
-        let dir = tempdir().unwrap();
-        epistola_format::CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None)
-            .unwrap();
-        set(
-            SetArgs {
-                name: "dev".to_string(),
-                assignment: "k=v".to_string(),
-                secret: false,
-            },
-            dir.path(),
-        )
-        .unwrap();
-        set(
-            SetArgs {
-                name: "dev".to_string(),
-                assignment: "k=v".to_string(),
-                secret: true,
-            },
-            dir.path(),
-        )
-        .unwrap();
-        set(
-            SetArgs {
-                name: "prod".to_string(),
-                assignment: "k=v".to_string(),
-                secret: false,
-            },
-            dir.path(),
-        )
-        .unwrap();
-
-        list(ListArgs { json: true }, dir.path()).unwrap();
     }
 
     #[test]
@@ -393,48 +252,13 @@ mod tests {
     }
 
     #[test]
-    fn delete_clears_the_default_environment_if_it_matches() {
+    fn rename_moves_the_environment() {
         let dir = tempdir().unwrap();
         epistola_format::CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None)
             .unwrap();
         new(
             NewArgs {
                 name: "dev".to_string(),
-            },
-            dir.path(),
-        )
-        .unwrap();
-        default(
-            DefaultArgs {
-                name: Some("dev".to_string()),
-            },
-            dir.path(),
-        )
-        .unwrap();
-
-        delete(
-            DeleteArgs {
-                name: "dev".to_string(),
-            },
-            dir.path(),
-        )
-        .unwrap();
-
-        let manifest =
-            epistola_format::CollectionManifest::load(&dir.path().join("epistola.toml")).unwrap();
-        assert_eq!(manifest.default_environment, None);
-    }
-
-    #[test]
-    fn rename_moves_the_environment_and_preserves_variables() {
-        let dir = tempdir().unwrap();
-        epistola_format::CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None)
-            .unwrap();
-        set(
-            SetArgs {
-                name: "dev".to_string(),
-                assignment: "k=v".to_string(),
-                secret: false,
             },
             dir.path(),
         )
@@ -451,40 +275,6 @@ mod tests {
 
         assert!(!dir.path().join("environments/dev.toml").is_file());
         assert!(dir.path().join("environments/staging.toml").is_file());
-    }
-
-    #[test]
-    fn rename_updates_the_default_environment_if_it_matches() {
-        let dir = tempdir().unwrap();
-        epistola_format::CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None)
-            .unwrap();
-        new(
-            NewArgs {
-                name: "dev".to_string(),
-            },
-            dir.path(),
-        )
-        .unwrap();
-        default(
-            DefaultArgs {
-                name: Some("dev".to_string()),
-            },
-            dir.path(),
-        )
-        .unwrap();
-
-        rename(
-            RenameArgs {
-                name: "dev".to_string(),
-                new_name: "staging".to_string(),
-            },
-            dir.path(),
-        )
-        .unwrap();
-
-        let manifest =
-            epistola_format::CollectionManifest::load(&dir.path().join("epistola.toml")).unwrap();
-        assert_eq!(manifest.default_environment.as_deref(), Some("staging"));
     }
 
     #[test]

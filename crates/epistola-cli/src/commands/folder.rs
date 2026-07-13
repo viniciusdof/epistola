@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
-use epistola_format::{FolderManifest, LoadedCollection};
+use epistola_engine::folder::init_folder;
 
 #[derive(Args, Debug)]
 pub struct FolderArgs {
@@ -33,20 +33,8 @@ pub fn run(args: FolderArgs, cwd: &Path) -> Result<()> {
 }
 
 fn init(args: InitArgs, cwd: &Path) -> Result<()> {
-    let collection = LoadedCollection::discover_from(cwd).context(
-        "not inside a collection (no epistola.toml found in this or any parent directory)",
-    )?;
-
-    let dir = if args.dir.is_empty() {
-        collection.root.clone()
-    } else {
-        collection.root.join(&args.dir)
-    };
-    let path = dir.join("folder.toml");
-
-    FolderManifest::create(&path)
-        .with_context(|| format!("failed to create '{}'", path.display()))?;
-
+    let path = init_folder(cwd, &args.dir)
+        .with_context(|| format!("failed to create folder.toml under '{}'", args.dir))?;
     println!("Created {}", path.display());
     Ok(())
 }
@@ -92,7 +80,6 @@ mod tests {
         std::fs::write(dir.path().join("epistola.toml"), "name = \"n\"\n").unwrap();
         init(InitArgs { dir: String::new() }, dir.path()).unwrap();
 
-        let err = init(InitArgs { dir: String::new() }, dir.path()).unwrap_err();
-        assert!(err.to_string().contains("failed to create"));
+        assert!(init(InitArgs { dir: String::new() }, dir.path()).is_err());
     }
 }

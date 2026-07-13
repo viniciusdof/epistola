@@ -345,6 +345,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "epistola-core",
+ "epistola-engine",
  "epistola-format",
  "epistola-http",
  "serde_json",
@@ -363,6 +364,22 @@ dependencies = [
  "minijinja",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "epistola-engine"
+version = "0.1.0"
+dependencies = [
+ "epistola-core",
+ "epistola-format",
+ "epistola-http",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]

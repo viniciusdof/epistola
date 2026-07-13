@@ -50,15 +50,6 @@ fn format_text_body(text: &str, headers: &[Header]) -> String {
     text.to_string()
 }
 
-pub fn response_to_json(response: &Response) -> serde_json::Value {
-    serde_json::json!({
-        "status": response.status,
-        "duration_ms": response.duration.as_millis(),
-        "headers": response.headers.iter().map(header_to_json).collect::<Vec<_>>(),
-        "body": response.body_as_str().ok(),
-    })
-}
-
 /// Like `format_response`, but for a request that hasn't been sent yet.
 pub fn format_request(request: &Request) -> String {
     let mut out = format!("{} {}\n", request.method, request.url);
@@ -78,20 +69,6 @@ pub fn format_request(request: &Request) -> String {
     }
     out.push('\n');
     out
-}
-
-pub fn request_to_json(request: &Request) -> serde_json::Value {
-    serde_json::json!({
-        "method": request.method.as_str(),
-        "url": request.url,
-        "query": request.query.iter().map(|(k, v)| serde_json::json!({"name": k, "value": v})).collect::<Vec<_>>(),
-        "headers": request.headers.iter().map(header_to_json).collect::<Vec<_>>(),
-        "body": std::str::from_utf8(request.body.as_bytes()).ok(),
-    })
-}
-
-fn header_to_json(header: &Header) -> serde_json::Value {
-    serde_json::json!({"name": header.name, "value": header.value})
 }
 
 #[cfg(test)]
@@ -167,15 +144,6 @@ mod tests {
     }
 
     #[test]
-    fn response_to_json_includes_status_and_body() {
-        let headers = vec![Header::new("x-test", "epistola")];
-        let json = response_to_json(&response(headers, b"ok"));
-        assert_eq!(json["status"], 200);
-        assert_eq!(json["body"], "ok");
-        assert_eq!(json["headers"][0]["name"], "x-test");
-    }
-
-    #[test]
     fn format_request_includes_method_url_headers_and_body() {
         let request = Request::new(Method::Post, "https://x.test/users")
             .query("page", "1")
@@ -186,13 +154,5 @@ mod tests {
         assert!(out.contains("?page=1"));
         assert!(out.contains("Authorization: Bearer abc"));
         assert!(out.contains("payload"));
-    }
-
-    #[test]
-    fn request_to_json_includes_method_and_url() {
-        let request = Request::get("https://x.test");
-        let json = request_to_json(&request);
-        assert_eq!(json["method"], "GET");
-        assert_eq!(json["url"], "https://x.test");
     }
 }

@@ -2,10 +2,9 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
-use epistola_format::LoadedCollection;
+use epistola_engine::discovery::discover_collection;
+use epistola_engine::history;
 use serde_json::Value;
-
-use crate::history;
 
 #[derive(Args, Debug)]
 pub struct HistoryArgs {
@@ -51,13 +50,8 @@ pub fn run(args: HistoryArgs, cwd: &Path) -> Result<()> {
     }
 }
 
-fn current_collection(cwd: &Path) -> Result<LoadedCollection> {
-    LoadedCollection::discover_from(cwd)
-        .context("not inside a collection (no epistola.toml found in this or any parent directory)")
-}
-
 fn list(args: ListArgs, cwd: &Path) -> Result<()> {
-    let collection = current_collection(cwd)?;
+    let collection = discover_collection(cwd)?;
     let mut entries = history::read_entries(&collection.root)?;
     if let Some(limit) = args.limit {
         entries.truncate(limit);
@@ -88,7 +82,7 @@ fn list(args: ListArgs, cwd: &Path) -> Result<()> {
 }
 
 fn show(args: ShowArgs, cwd: &Path) -> Result<()> {
-    let collection = current_collection(cwd)?;
+    let collection = discover_collection(cwd)?;
     let entries = history::read_entries(&collection.root)?;
 
     if args.index == 0 {
@@ -111,7 +105,7 @@ fn show(args: ShowArgs, cwd: &Path) -> Result<()> {
 }
 
 fn clear(_args: ClearArgs, cwd: &Path) -> Result<()> {
-    let collection = current_collection(cwd)?;
+    let collection = discover_collection(cwd)?;
     history::clear(&collection.root)?;
     println!("Cleared history for this collection.");
     Ok(())

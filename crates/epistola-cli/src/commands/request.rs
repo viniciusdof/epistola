@@ -2,10 +2,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
-use epistola_core::LayeredVariableResolver;
-use epistola_format::{load_folder_chain, LoadedCollection, RequestFile};
+use epistola_engine::discovery::discover_collection;
+use epistola_engine::requests::{find_request_files, lint_collection, slugify};
+use epistola_engine::resolve::load_and_resolve;
+use epistola_engine::EngineError;
+use epistola_format::RequestFile;
 
-use crate::errors::CliError;
 use crate::output;
 
 #[derive(Args, Debug)]
@@ -110,35 +112,8 @@ pub fn run(args: RequestArgs, cwd: &Path) -> Result<()> {
     }
 }
 
-pub(crate) fn slugify(name: &str) -> String {
-    let mut slug = String::new();
-    let mut last_was_dash = false;
-    for c in name.to_ascii_lowercase().chars() {
-        if c.is_ascii_alphanumeric() {
-            slug.push(c);
-            last_was_dash = false;
-        } else if !last_was_dash && !slug.is_empty() {
-            slug.push('-');
-            last_was_dash = true;
-        }
-    }
-    while slug.ends_with('-') {
-        slug.pop();
-    }
-    if slug.is_empty() {
-        "request".to_string()
-    } else {
-        slug
-    }
-}
-
-fn current_collection(cwd: &Path) -> Result<LoadedCollection> {
-    LoadedCollection::discover_from(cwd)
-        .context("not inside a collection (no epistola.toml found in this or any parent directory)")
-}
-
 fn new(args: NewArgs, cwd: &Path) -> Result<()> {
-    let collection = current_collection(cwd)?;
+    let collection = discover_collection(cwd)?;
 
     let dir = if args.dir.is_empty() {
         collection.root.clone()
@@ -154,32 +129,8 @@ fn new(args: NewArgs, cwd: &Path) -> Result<()> {
     Ok(())
 }
 
-fn find_request_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut found = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-
-    while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .with_context(|| format!("failed to read directory '{}'", dir.display()))?;
-        for entry in entries {
-            let path = entry?.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.ends_with(".req.toml"))
-            {
-                found.push(path);
-            }
-        }
-    }
-
-    Ok(found)
-}
-
 fn list(args: ListArgs, cwd: &Path) -> Result<()> {
-    let collection = current_collection(cwd)?;
+    let collection = discover_collection(cwd)?;
 
     let mut entries = Vec::new();
     for path in find_request_files(&collection.root)? {
@@ -227,30 +178,23 @@ fn show(args: ShowArgs) -> Result<()> {
         return show_raw(&args);
     }
 
-    let file = RequestFile::load(&args.path)
-        .with_context(|| format!("failed to load '{}'", args.path.display()))?;
-    let collection = LoadedCollection::discover_from(&args.path).context(
-        "not inside a collection (no epistola.toml found in this or any parent directory)",
+    let collection = discover_collection(&args.path)?;
+    let resolved = load_and_resolve(
+        &args.path,
+        &collection,
+        args.env.as_deref(),
+        std::collections::BTreeMap::new(),
     )?;
-
-    let base_dir = args
-        .path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
-
-    let mut resolver = collection.resolver_for_environment(args.env.as_deref())?;
-    let chain = load_folder_chain(&collection.root, base_dir)?;
-    let unresolved = file.to_unresolved().with_folder_inheritance(&chain);
-    resolver = resolver.layer(unresolved.variables.clone());
-    let request = unresolved.resolve(&resolver, base_dir)?;
 
     if args.json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&output::request_to_json(&request))?
+            serde_json::to_string_pretty(&epistola_engine::output::request_to_json(
+                &resolved.request
+            ))?
         );
     } else {
-        print!("{}", output::format_request(&request));
+        print!("{}", output::format_request(&resolved.request));
     }
 
     Ok(())
@@ -278,28 +222,14 @@ fn validate(args: ValidateArgs) -> Result<()> {
     Ok(())
 }
 
-struct LintIssue {
-    path: PathBuf,
-    message: String,
-}
-
 fn lint(args: LintArgs, cwd: &Path) -> Result<()> {
-    let collection = current_collection(cwd)?;
-    let base_resolver = collection.resolver_for_environment(args.env.as_deref())?;
-
-    let mut checked = 0usize;
-    let mut issues = Vec::new();
-    for path in find_request_files(&collection.root)? {
-        checked += 1;
-        if let Err(message) = lint_one(&path, &collection.root, &base_resolver) {
-            issues.push(LintIssue { path, message });
-        }
-    }
+    let collection = discover_collection(cwd)?;
+    let report = lint_collection(&collection, args.env.as_deref())?;
 
     if args.json {
         let json = serde_json::json!({
-            "checked": checked,
-            "errors": issues.iter().map(|issue| serde_json::json!({
+            "checked": report.checked,
+            "errors": report.issues.iter().map(|issue| serde_json::json!({
                 "path": issue.path.display().to_string(),
                 "error": issue.message,
             })).collect::<Vec<_>>(),
@@ -307,35 +237,20 @@ fn lint(args: LintArgs, cwd: &Path) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&json)?);
     } else {
         println!(
-            "Checked {checked} request file(s), {} error(s)",
-            issues.len()
+            "Checked {} request file(s), {} error(s)",
+            report.checked,
+            report.issues.len()
         );
-        for issue in &issues {
+        for issue in &report.issues {
             println!("{}: {}", issue.path.display(), issue.message);
         }
     }
 
-    if issues.is_empty() {
+    if report.issues.is_empty() {
         Ok(())
     } else {
-        Err(CliError::LintFailed(issues.len()).into())
+        Err(EngineError::LintFailed(report.issues.len()).into())
     }
-}
-
-fn lint_one(
-    path: &Path,
-    collection_root: &Path,
-    base_resolver: &LayeredVariableResolver,
-) -> Result<(), String> {
-    let file = RequestFile::load(path).map_err(|err| err.to_string())?;
-    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let chain = load_folder_chain(collection_root, base_dir).map_err(|err| err.to_string())?;
-    let unresolved = file.to_unresolved().with_folder_inheritance(&chain);
-    let resolver = base_resolver.clone().layer(unresolved.variables.clone());
-    unresolved
-        .resolve(&resolver, base_dir)
-        .map(|_| ())
-        .map_err(|err| err.to_string())
 }
 
 fn delete(args: DeleteArgs) -> Result<()> {
@@ -405,21 +320,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn slugify_lowercases_and_dashes_whitespace() {
-        assert_eq!(super::slugify("List Users"), "list-users");
-    }
-
-    #[test]
-    fn slugify_collapses_repeated_separators() {
-        assert_eq!(super::slugify("List   Users!!"), "list-users");
-    }
-
-    #[test]
-    fn slugify_falls_back_when_nothing_alphanumeric_remains() {
-        assert_eq!(super::slugify("!!!"), "request");
-    }
-
-    #[test]
     fn new_errors_outside_a_collection() {
         let dir = tempdir().unwrap();
         let args = NewArgs {
@@ -464,17 +364,6 @@ mod tests {
         new(args, dir.path()).unwrap();
 
         assert!(dir.path().join("auth/login.req.toml").is_file());
-    }
-
-    #[test]
-    fn find_request_files_finds_nested_req_toml_files_only() {
-        let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("users")).unwrap();
-        std::fs::write(dir.path().join("users/list.req.toml"), "").unwrap();
-        std::fs::write(dir.path().join("environments.toml"), "").unwrap(); // not a request file
-
-        let found = find_request_files(dir.path()).unwrap();
-        assert_eq!(found, vec![dir.path().join("users/list.req.toml")]);
     }
 
     #[test]
@@ -571,172 +460,15 @@ mod tests {
         .is_err());
     }
 
-    fn write(dir: &Path, rel: &str, content: &str) {
-        let path = dir.join(rel);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, content).unwrap();
-    }
-
     #[test]
     fn lint_reports_zero_errors_for_a_fully_resolvable_collection() {
         let dir = tempdir().unwrap();
         CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
         RequestFile::create(&dir.path().join("a.req.toml"), "A", "GET", "https://x.test").unwrap();
-        RequestFile::create(
-            &dir.path().join("users/list.req.toml"),
-            "B",
-            "GET",
-            "https://y.test",
-        )
-        .unwrap();
 
         assert!(lint(
             LintArgs {
                 env: None,
-                json: false
-            },
-            dir.path()
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn lint_collects_errors_from_every_bad_file_instead_of_stopping_at_the_first() {
-        let dir = tempdir().unwrap();
-        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
-        RequestFile::create(
-            &dir.path().join("ok.req.toml"),
-            "OK",
-            "GET",
-            "https://x.test",
-        )
-        .unwrap();
-        write(
-            dir.path(),
-            "bad-var.req.toml",
-            "[request]\nname = \"n\"\nmethod = \"GET\"\nurl = \"https://{{missing}}\"\n",
-        );
-        write(
-            dir.path(),
-            "bad-multipart.req.toml",
-            concat!(
-                "[request]\n",
-                "name = \"n\"\n",
-                "method = \"POST\"\n",
-                "url = \"https://x.test\"\n",
-                "\n",
-                "[request.body]\n",
-                "type = \"multipart\"\n",
-                "\n",
-                "[[request.body.parts]]\n",
-                "type = \"file\"\n",
-                "name = \"avatar\"\n",
-                "path = \"missing.png\"\n",
-            ),
-        );
-
-        let err = lint(
-            LintArgs {
-                env: None,
-                json: false,
-            },
-            dir.path(),
-        )
-        .unwrap_err();
-
-        let cli_err = err.downcast_ref::<CliError>().unwrap();
-        assert!(matches!(cli_err, CliError::LintFailed(2)));
-    }
-
-    #[test]
-    fn lint_fails_a_request_whose_inherited_folder_auth_token_is_unresolvable() {
-        let dir = tempdir().unwrap();
-        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
-        write(
-            dir.path(),
-            "auth/folder.toml",
-            "[auth]\ntype = \"bearer\"\ntoken = \"{{missing_token}}\"\n",
-        );
-        write(
-            dir.path(),
-            "auth/login.req.toml",
-            "[request]\nname = \"n\"\nmethod = \"GET\"\nurl = \"https://x.test\"\n",
-        );
-
-        let err = lint(
-            LintArgs {
-                env: None,
-                json: false,
-            },
-            dir.path(),
-        )
-        .unwrap_err();
-
-        let cli_err = err.downcast_ref::<CliError>().unwrap();
-        assert!(matches!(cli_err, CliError::LintFailed(1)));
-    }
-
-    #[test]
-    fn lint_resolves_against_the_given_environment() {
-        let dir = tempdir().unwrap();
-        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
-        write(
-            dir.path(),
-            "environments/dev.toml",
-            "[variables]\nhost = \"x.test\"\n",
-        );
-        RequestFile::create(
-            &dir.path().join("a.req.toml"),
-            "A",
-            "GET",
-            "https://{{host}}",
-        )
-        .unwrap();
-
-        assert!(lint(
-            LintArgs {
-                env: None,
-                json: false
-            },
-            dir.path()
-        )
-        .is_err());
-        assert!(lint(
-            LintArgs {
-                env: Some("dev".to_string()),
-                json: false
-            },
-            dir.path()
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn lint_layers_request_level_variables_on_top_of_the_environment() {
-        let dir = tempdir().unwrap();
-        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
-        write(
-            dir.path(),
-            "environments/dev.toml",
-            "[variables]\nhost = \"x.test\"\n",
-        );
-        write(
-            dir.path(),
-            "a.req.toml",
-            concat!(
-                "[request]\n",
-                "name = \"n\"\n",
-                "method = \"GET\"\n",
-                "url = \"https://{{host}}/{{page}}\"\n",
-                "\n",
-                "[request.variables]\n",
-                "page = \"1\"\n",
-            ),
-        );
-
-        assert!(lint(
-            LintArgs {
-                env: Some("dev".to_string()),
                 json: false
             },
             dir.path()
@@ -755,6 +487,29 @@ mod tests {
             dir.path()
         )
         .is_err());
+    }
+
+    #[test]
+    fn lint_returns_engine_error_lint_failed_with_the_issue_count() {
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        std::fs::write(
+            dir.path().join("bad.req.toml"),
+            "[request]\nname = \"n\"\nmethod = \"GET\"\nurl = \"https://{{missing}}\"\n",
+        )
+        .unwrap();
+
+        let err = lint(
+            LintArgs {
+                env: None,
+                json: false,
+            },
+            dir.path(),
+        )
+        .unwrap_err();
+
+        let engine_err = err.downcast_ref::<EngineError>().unwrap();
+        assert!(matches!(engine_err, EngineError::LintFailed(1)));
     }
 
     #[test]

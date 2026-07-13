@@ -2,17 +2,15 @@ mod app;
 mod cli;
 mod client_config;
 mod commands;
-mod errors;
-mod history;
 mod output;
 
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use epistola_engine::EngineError;
 
 use app::{App, Command};
-use errors::CliError;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -43,16 +41,14 @@ async fn run() -> Result<()> {
 
 /// Maps an error to a process exit code so scripts can distinguish failure
 /// classes. `2` is reserved by clap for argument-parsing errors (it exits
-/// before `run` is ever called).
+/// before `run` is ever called). Every command path routes its
+/// domain-level errors through `epistola_engine::EngineError`, so this is
+/// the only downcast needed.
 fn exit_code_for(err: &anyhow::Error) -> u8 {
-    if err.downcast_ref::<CliError>().is_some() {
-        return 5;
+    match err.downcast_ref::<EngineError>() {
+        Some(EngineError::HttpStatusFailure(_) | EngineError::LintFailed(_)) => 5,
+        Some(EngineError::Executor(_)) => 4,
+        Some(EngineError::Format(_) | EngineError::NotInCollection { .. }) => 3,
+        _ => 1,
     }
-    if err.downcast_ref::<epistola_core::ExecutorError>().is_some() {
-        return 4;
-    }
-    if err.downcast_ref::<epistola_format::FormatError>().is_some() {
-        return 3;
-    }
-    1
 }

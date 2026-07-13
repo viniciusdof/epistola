@@ -1,14 +1,11 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use clap::Parser;
-use epistola_core::HttpExecutor;
-use epistola_format::{LoadedCollection, RequestFile};
-use epistola_http::ReqwestExecutor;
+use epistola_engine::adhoc;
+use epistola_engine::EngineError;
 
 use crate::cli::Cli;
-use crate::commands::request::slugify;
-use crate::errors::CliError;
 use crate::output;
 
 /// Ad-hoc, httpie-style request: `epistola GET <url> -H ... -q ... -d ...`
@@ -18,22 +15,18 @@ pub async fn run(args: Vec<String>, cwd: &Path) -> Result<()> {
     let output_path = cli.output.clone();
     let check_status = cli.check_status;
     let verbose = cli.verbose;
-    // Computed before `into_request` consumes `cli`; a `multipart` body
+    let overrides = cli.client.to_overrides();
+
+    // Computed before `build_request` consumes the body; a `multipart` body
     // can't be reconstructed from its already-encoded bytes, so `--save`
     // needs the pre-encoding structure.
-    let body_spec = cli.ad_hoc_body()?.into_body_spec();
-    let collection = LoadedCollection::discover_from(cwd).ok();
-    let client_spec = collection
-        .as_ref()
-        .map(|c| c.manifest.client.clone())
-        .unwrap_or_default();
-    let base_dir = collection.as_ref().map(|c| c.root.as_path()).unwrap_or(cwd);
-    let client_config = cli.client.resolve(&client_spec, base_dir)?;
-    let request = cli.into_request(cwd)?;
+    let adhoc_request = cli.to_adhoc_request()?;
+    let body_spec = adhoc_request.body.clone().into_body_spec();
+    let request = adhoc::build_request(adhoc_request, cwd)?;
 
     // Fail fast on a bad --save before wasting a real network call.
     let save_path = match &save_as {
-        Some(name) => Some(prepare_save_path(name, cwd)?),
+        Some(name) => Some(adhoc::prepare_save_path(name, cwd)?),
         None => None,
     };
 
@@ -41,61 +34,49 @@ pub async fn run(args: Vec<String>, cwd: &Path) -> Result<()> {
         eprint!("{}", output::format_request(&request));
     }
 
-    let executor =
-        ReqwestExecutor::with_config(client_config).context("invalid client configuration")?;
-    let response = executor.execute(&request).await.context("request failed")?;
+    let outcome = adhoc::run_adhoc_request(&request, cwd, &overrides).await?;
 
-    if let Some(collection) = &collection {
-        if collection.manifest.history.unwrap_or(true) {
-            if let Err(err) = crate::history::append_entry(&collection.root, &request, &response) {
-                eprintln!("Warning: failed to write history entry: {err:#}");
-            }
-        }
+    if let Some(warning) = outcome.history_warning {
+        eprintln!(
+            "Warning: failed to write history entry: {:#}",
+            anyhow::Error::from(warning)
+        );
     }
 
     if verbose {
-        eprint!("{}", output::format_response_head(&response));
+        eprint!("{}", output::format_response_head(&outcome.response));
     }
 
     if let Some(path) = &output_path {
-        output::write_response_body(&response, path)
+        output::write_response_body(&outcome.response, path)
             .with_context(|| format!("failed to write response body to '{}'", path.display()))?;
-        print!("{}", output::format_response_head(&response));
-        println!("Saved {} bytes to {}", response.body.len(), path.display());
+        print!("{}", output::format_response_head(&outcome.response));
+        println!(
+            "Saved {} bytes to {}",
+            outcome.response.body.len(),
+            path.display()
+        );
     } else {
-        print!("{}", output::format_response(&response));
+        print!("{}", output::format_response(&outcome.response));
     }
 
     if let (Some(name), Some(path)) = (&save_as, &save_path) {
-        RequestFile::from_request_and_body(name, &request, body_spec)
-            .create_at(path)
-            .with_context(|| format!("failed to save request to '{}'", path.display()))?;
+        adhoc::save_request(name, &request, body_spec, path)?;
         println!("Saved to {}", path.display());
     }
 
-    if check_status && response.status >= 400 {
-        return Err(CliError::HttpStatus(response.status).into());
+    if check_status && outcome.response.status >= 400 {
+        return Err(EngineError::HttpStatusFailure(outcome.response.status).into());
     }
 
     Ok(())
-}
-
-fn prepare_save_path(name: &str, cwd: &Path) -> Result<PathBuf> {
-    let collection = LoadedCollection::discover_from(cwd).context(
-        "--save requires being inside a collection (no epistola.toml found in this or any parent directory)",
-    )?;
-    let path = collection.root.join(format!("{}.req.toml", slugify(name)));
-    if path.is_file() {
-        bail!("'{}' already exists", path.display());
-    }
-    Ok(path)
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use epistola_format::CollectionManifest;
+    use epistola_format::{CollectionManifest, RequestFile};
     use tempfile::tempdir;
     use wiremock::matchers::{header, method, path as path_matcher, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -234,21 +215,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn prepare_save_path_errors_outside_a_collection() {
-        let dir = tempdir().unwrap();
-        assert!(prepare_save_path("anything", dir.path()).is_err());
-    }
-
-    #[test]
-    fn prepare_save_path_errors_on_an_existing_file() {
-        let dir = tempdir().unwrap();
-        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
-        std::fs::write(dir.path().join("taken.req.toml"), "").unwrap();
-
-        assert!(prepare_save_path("Taken", dir.path()).is_err());
-    }
-
     #[tokio::test]
     async fn output_flag_writes_the_body_to_a_file() {
         let server = MockServer::start().await;
@@ -297,63 +263,6 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.downcast_ref::<crate::errors::CliError>().is_some());
-    }
-
-    #[tokio::test]
-    async fn ad_hoc_request_appends_a_history_entry_inside_a_collection() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-
-        let dir = tempdir().unwrap();
-        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
-
-        run(vec!["GET".to_string(), server.uri()], dir.path())
-            .await
-            .unwrap();
-
-        assert_eq!(crate::history::read_entries(dir.path()).unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn ad_hoc_request_skips_history_outside_a_collection() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-
-        let dir = tempdir().unwrap();
-
-        run(vec!["GET".to_string(), server.uri()], dir.path())
-            .await
-            .unwrap();
-
-        assert!(!dir.path().join(".epistola").is_dir());
-    }
-
-    #[tokio::test]
-    async fn ad_hoc_request_respects_the_collections_history_default() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-
-        let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("epistola.toml"),
-            "name = \"n\"\nhistory = false\n",
-        )
-        .unwrap();
-
-        run(vec!["GET".to_string(), server.uri()], dir.path())
-            .await
-            .unwrap();
-
-        assert!(!dir.path().join(".epistola").is_dir());
+        assert!(err.downcast_ref::<EngineError>().is_some());
     }
 }

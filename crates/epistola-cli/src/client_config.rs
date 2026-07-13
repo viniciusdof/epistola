@@ -1,10 +1,7 @@
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::path::PathBuf;
 
-use anyhow::{Context, Result};
 use clap::Args;
-use epistola_format::ClientSpec;
-use epistola_http::{ClientConfig, ProxyConfig};
+use epistola_engine::client::ClientOverrides;
 
 /// Client-behavior flags shared by `run` and the ad-hoc CLI. A flag
 /// overrides the matching collection `[client]` default.
@@ -38,42 +35,15 @@ pub struct ClientArgs {
 }
 
 impl ClientArgs {
-    pub fn resolve(&self, collection: &ClientSpec, base_dir: &Path) -> Result<ClientConfig> {
-        let proxy = if self.no_proxy {
-            ProxyConfig::Disabled
-        } else if let Some(url) = self.proxy.clone().or_else(|| collection.proxy.clone()) {
-            ProxyConfig::Custom(url)
-        } else {
-            ProxyConfig::SystemDefault
-        };
-
-        let client_identity_pem = match self
-            .client_cert
-            .clone()
-            .or_else(|| collection.client_cert.clone().map(PathBuf::from))
-        {
-            Some(path) => {
-                let full_path = base_dir.join(&path);
-                Some(std::fs::read(&full_path).with_context(|| {
-                    format!(
-                        "failed to read client certificate '{}'",
-                        full_path.display()
-                    )
-                })?)
-            }
-            None => None,
-        };
-
-        Ok(ClientConfig {
-            timeout: self
-                .timeout
-                .or(collection.timeout_secs)
-                .map(Duration::from_secs),
-            max_redirects: self.max_redirects.or(collection.max_redirects),
-            proxy,
-            insecure: self.insecure || collection.insecure,
-            client_identity_pem,
-        })
+    pub fn to_overrides(&self) -> ClientOverrides {
+        ClientOverrides {
+            timeout: self.timeout,
+            max_redirects: self.max_redirects,
+            proxy: self.proxy.clone(),
+            no_proxy: self.no_proxy,
+            insecure: self.insecure,
+            client_cert: self.client_cert.clone(),
+        }
     }
 }
 
@@ -81,137 +51,35 @@ impl ClientArgs {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use epistola_http::ProxyConfig;
-    use tempfile::tempdir;
-
     use super::*;
 
     #[test]
-    fn cli_flag_overrides_the_collection_default() {
+    fn to_overrides_maps_every_field() {
         let args = ClientArgs {
             timeout: Some(5),
-            ..Default::default()
-        };
-        let collection = ClientSpec {
-            timeout_secs: Some(30),
-            ..Default::default()
-        };
-
-        assert_eq!(
-            args.resolve(&collection, Path::new(".")).unwrap().timeout,
-            Some(Duration::from_secs(5))
-        );
-    }
-
-    #[test]
-    fn falls_back_to_the_collection_default_when_no_flag_given() {
-        let args = ClientArgs::default();
-        let collection = ClientSpec {
-            max_redirects: Some(3),
-            ..Default::default()
-        };
-
-        assert_eq!(
-            args.resolve(&collection, Path::new("."))
-                .unwrap()
-                .max_redirects,
-            Some(3)
-        );
-    }
-
-    #[test]
-    fn no_proxy_flag_disables_proxying_even_if_the_collection_configures_one() {
-        let args = ClientArgs {
+            max_redirects: Some(2),
+            proxy: Some("http://proxy.local".to_string()),
             no_proxy: true,
-            ..Default::default()
-        };
-        let collection = ClientSpec {
-            proxy: Some("http://proxy.local:8080".to_string()),
-            ..Default::default()
-        };
-
-        assert!(matches!(
-            args.resolve(&collection, Path::new(".")).unwrap().proxy,
-            ProxyConfig::Disabled
-        ));
-    }
-
-    #[test]
-    fn defaults_to_system_proxy_when_nothing_is_configured() {
-        let args = ClientArgs::default();
-        let collection = ClientSpec::default();
-
-        assert!(matches!(
-            args.resolve(&collection, Path::new(".")).unwrap().proxy,
-            ProxyConfig::SystemDefault
-        ));
-    }
-
-    #[test]
-    fn insecure_flag_enables_when_the_cli_flag_is_set() {
-        let args = ClientArgs {
             insecure: true,
-            ..Default::default()
+            client_cert: Some(PathBuf::from("client.pem")),
         };
-        let collection = ClientSpec::default();
-
-        assert!(args.resolve(&collection, Path::new(".")).unwrap().insecure);
+        let overrides = args.to_overrides();
+        assert_eq!(overrides.timeout, Some(5));
+        assert_eq!(overrides.max_redirects, Some(2));
+        assert_eq!(overrides.proxy.as_deref(), Some("http://proxy.local"));
+        assert!(overrides.no_proxy);
+        assert!(overrides.insecure);
+        assert_eq!(overrides.client_cert, Some(PathBuf::from("client.pem")));
     }
 
     #[test]
-    fn insecure_is_enabled_when_the_collection_sets_it_even_without_the_flag() {
-        let args = ClientArgs::default();
-        let collection = ClientSpec {
-            insecure: true,
-            ..Default::default()
-        };
-
-        assert!(args.resolve(&collection, Path::new(".")).unwrap().insecure);
-    }
-
-    #[test]
-    fn client_cert_flag_overrides_the_collection_default() {
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("flag.pem"), b"flag-pem").unwrap();
-        std::fs::write(dir.path().join("collection.pem"), b"collection-pem").unwrap();
-
-        let args = ClientArgs {
-            client_cert: Some(PathBuf::from("flag.pem")),
-            ..Default::default()
-        };
-        let collection = ClientSpec {
-            client_cert: Some("collection.pem".to_string()),
-            ..Default::default()
-        };
-
-        let config = args.resolve(&collection, dir.path()).unwrap();
-        assert_eq!(config.client_identity_pem, Some(b"flag-pem".to_vec()));
-    }
-
-    #[test]
-    fn client_cert_falls_back_to_the_collection_value_relative_to_base_dir() {
-        let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("collection.pem"), b"collection-pem").unwrap();
-
-        let args = ClientArgs::default();
-        let collection = ClientSpec {
-            client_cert: Some("collection.pem".to_string()),
-            ..Default::default()
-        };
-
-        let config = args.resolve(&collection, dir.path()).unwrap();
-        assert_eq!(config.client_identity_pem, Some(b"collection-pem".to_vec()));
-    }
-
-    #[test]
-    fn client_cert_errors_when_the_file_is_missing() {
-        let dir = tempdir().unwrap();
-        let args = ClientArgs {
-            client_cert: Some(PathBuf::from("nope.pem")),
-            ..Default::default()
-        };
-        let collection = ClientSpec::default();
-
-        assert!(args.resolve(&collection, dir.path()).is_err());
+    fn to_overrides_on_the_default_args_is_all_none() {
+        let overrides = ClientArgs::default().to_overrides();
+        assert_eq!(overrides.timeout, None);
+        assert_eq!(overrides.max_redirects, None);
+        assert_eq!(overrides.proxy, None);
+        assert!(!overrides.no_proxy);
+        assert!(!overrides.insecure);
+        assert_eq!(overrides.client_cert, None);
     }
 }

@@ -1,9 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Result};
 use clap::Parser;
-use epistola_core::{Body, LayeredVariableResolver, Method, Request};
-use epistola_format::{BodySpec, MultipartPart};
+use epistola_engine::adhoc::{AdHocBody, AdHocRequest};
+use epistola_format::MultipartPart;
 
 use crate::client_config::ClientArgs;
 
@@ -55,25 +55,8 @@ pub struct Cli {
     pub client: ClientArgs,
 }
 
-/// The ad-hoc CLI's body, before encoding. Narrower than `BodySpec` (only
-/// what `-d`/`-F` can produce) so matching over it can be exhaustive with no
-/// `unreachable!()` branch.
-pub(crate) enum AdHocBody {
-    None,
-    Text(String),
-    Multipart(Vec<MultipartPart>),
-}
-
-impl AdHocBody {
-    pub(crate) fn into_body_spec(self) -> BodySpec {
-        match self {
-            AdHocBody::None => BodySpec::None,
-            AdHocBody::Text(content) => BodySpec::Text { content },
-            AdHocBody::Multipart(parts) => BodySpec::Multipart { parts },
-        }
-    }
-}
-
+/// Parses a `-F NAME=VALUE` or `-F NAME=@PATH` entry — httpie-style CLI
+/// syntax, so this stays here rather than in `epistola_engine::adhoc`.
 fn parse_form_entry(raw: &str) -> Result<MultipartPart> {
     let (name, value) = raw
         .split_once('=')
@@ -112,51 +95,39 @@ impl Cli {
         }
     }
 
-    /// Builds the send-ready `Request`. `cwd` anchors relative `-F
-    /// NAME=@PATH` file paths — ad-hoc requests never interpolate `{{var}}`
-    /// placeholders, so multipart parts are encoded with an empty resolver.
-    pub fn into_request(self, cwd: &Path) -> Result<Request> {
+    /// Converts the parsed CLI args into the plain-data request
+    /// `epistola_engine::adhoc` builds from — the only place httpie-style
+    /// `NAME:VALUE`/`KEY=VALUE` string parsing happens.
+    pub fn to_adhoc_request(&self) -> Result<AdHocRequest> {
         // Method::from_str is Infallible, so this can never actually fail.
         let method = self
             .method
-            .parse::<Method>()
+            .parse::<epistola_core::Method>()
             .unwrap_or_else(|never| match never {});
 
-        let body = self.ad_hoc_body()?;
-        let mut request = Request::new(method, self.url);
-
+        let mut headers = Vec::new();
         for raw in &self.headers {
             let (name, value) = raw
                 .split_once(':')
                 .ok_or_else(|| anyhow!("invalid header '{raw}', expected NAME:VALUE"))?;
-            request = request.header(name.trim(), value.trim());
+            headers.push((name.trim().to_string(), value.trim().to_string()));
         }
 
+        let mut query = Vec::new();
         for raw in &self.query {
             let (key, value) = raw
                 .split_once('=')
                 .ok_or_else(|| anyhow!("invalid query param '{raw}', expected KEY=VALUE"))?;
-            request = request.query(key, value);
+            query.push((key.to_string(), value.to_string()));
         }
 
-        match body {
-            AdHocBody::None => {}
-            AdHocBody::Text(content) => request = request.body(Body::text(content)),
-            AdHocBody::Multipart(parts) => {
-                let boundary = epistola_format::generate_boundary();
-                let resolver = LayeredVariableResolver::new();
-                let bytes = epistola_format::encode_multipart(&parts, &resolver, cwd, &boundary)
-                    .map_err(|err| anyhow!(err))?;
-                request = request
-                    .header(
-                        "Content-Type",
-                        format!("multipart/form-data; boundary={boundary}"),
-                    )
-                    .body(Body::Bytes(bytes));
-            }
-        }
-
-        Ok(request)
+        Ok(AdHocRequest {
+            method,
+            url: self.url.clone(),
+            headers,
+            query,
+            body: self.ad_hoc_body()?,
+        })
     }
 }
 
@@ -164,6 +135,9 @@ impl Cli {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use std::path::Path;
+
+    use epistola_core::{Body, Method};
     use tempfile::tempdir;
 
     use super::*;
@@ -172,11 +146,14 @@ mod tests {
         Cli::parse_from(std::iter::once("epistola").chain(args.iter().copied()))
     }
 
+    fn built_request(args: &[&str], cwd: &Path) -> epistola_core::Request {
+        let adhoc = cli(args).to_adhoc_request().unwrap();
+        epistola_engine::adhoc::build_request(adhoc, cwd).unwrap()
+    }
+
     #[test]
     fn builds_a_bare_get_request() {
-        let request = cli(&["GET", "https://x.test"])
-            .into_request(Path::new("."))
-            .unwrap();
+        let request = built_request(&["GET", "https://x.test"], Path::new("."));
         assert_eq!(request.method, Method::Get);
         assert_eq!(request.url, "https://x.test");
         assert!(request.headers.is_empty());
@@ -186,9 +163,10 @@ mod tests {
 
     #[test]
     fn parses_headers_and_trims_whitespace() {
-        let request = cli(&["GET", "https://x.test", "-H", "X-Test: value"])
-            .into_request(Path::new("."))
-            .unwrap();
+        let request = built_request(
+            &["GET", "https://x.test", "-H", "X-Test: value"],
+            Path::new("."),
+        );
         assert_eq!(request.headers[0].name, "X-Test");
         assert_eq!(request.headers[0].value, "value");
     }
@@ -196,32 +174,28 @@ mod tests {
     #[test]
     fn rejects_a_header_without_a_colon() {
         let err = cli(&["GET", "https://x.test", "-H", "not-a-header"])
-            .into_request(Path::new("."))
+            .to_adhoc_request()
             .unwrap_err();
         assert!(err.to_string().contains("NAME:VALUE"));
     }
 
     #[test]
     fn parses_query_params() {
-        let request = cli(&["GET", "https://x.test", "-q", "foo=bar"])
-            .into_request(Path::new("."))
-            .unwrap();
+        let request = built_request(&["GET", "https://x.test", "-q", "foo=bar"], Path::new("."));
         assert_eq!(request.query, vec![("foo".to_string(), "bar".to_string())]);
     }
 
     #[test]
     fn rejects_a_query_param_without_an_equals_sign() {
         let err = cli(&["GET", "https://x.test", "-q", "foo"])
-            .into_request(Path::new("."))
+            .to_adhoc_request()
             .unwrap_err();
         assert!(err.to_string().contains("KEY=VALUE"));
     }
 
     #[test]
     fn data_flag_sets_the_body() {
-        let request = cli(&["POST", "https://x.test", "-d", "payload"])
-            .into_request(Path::new("."))
-            .unwrap();
+        let request = built_request(&["POST", "https://x.test", "-d", "payload"], Path::new("."));
         assert_eq!(request.body, Body::text("payload"));
     }
 
@@ -236,9 +210,10 @@ mod tests {
 
     #[test]
     fn form_flag_builds_a_multipart_body_with_a_text_field() {
-        let request = cli(&["POST", "https://x.test", "-F", "caption=hi"])
-            .into_request(Path::new("."))
-            .unwrap();
+        let request = built_request(
+            &["POST", "https://x.test", "-F", "caption=hi"],
+            Path::new("."),
+        );
 
         let content_type = &request
             .headers
@@ -257,9 +232,10 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("avatar.png"), b"pngbytes").unwrap();
 
-        let request = cli(&["POST", "https://x.test", "-F", "file=@avatar.png"])
-            .into_request(dir.path())
-            .unwrap();
+        let request = built_request(
+            &["POST", "https://x.test", "-F", "file=@avatar.png"],
+            dir.path(),
+        );
 
         let body = String::from_utf8_lossy(request.body.as_bytes()).into_owned();
         assert!(body.contains("filename=\"avatar.png\""));
@@ -269,7 +245,7 @@ mod tests {
     #[test]
     fn data_and_form_together_is_an_error() {
         let err = cli(&["POST", "https://x.test", "-d", "x", "-F", "y=z"])
-            .into_request(Path::new("."))
+            .to_adhoc_request()
             .unwrap_err();
         assert!(err.to_string().contains("mutually exclusive"));
     }
