@@ -1,4 +1,4 @@
-# epistola
+# ϵpistola
 
 > [!WARNING]
 > 🚧 **Extremely Work in Progress** 🚧

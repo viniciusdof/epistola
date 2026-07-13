@@ -1,6 +1,6 @@
 [package]
 name = "epistola-cli"
-description = "epistola's command-line client"
+description = "ϵpistola's command-line client"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
