@@ -3,6 +3,7 @@ mod cli;
 mod client_config;
 mod commands;
 mod errors;
+mod history;
 mod output;
 
 use std::process::ExitCode;
@@ -34,6 +35,7 @@ async fn run() -> Result<()> {
         Command::Env(args) => commands::env::run(args, &cwd),
         Command::Folder(args) => commands::folder::run(args, &cwd),
         Command::Run(args) => commands::run::run(args).await,
+        Command::History(args) => commands::history::run(args, &cwd),
         Command::Completions(args) => commands::completions::run(args),
         Command::Send(args) => commands::send::run(args, &cwd).await,
     }

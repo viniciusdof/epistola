@@ -45,6 +45,14 @@ pub async fn run(args: Vec<String>, cwd: &Path) -> Result<()> {
         ReqwestExecutor::with_config(client_config).context("invalid client configuration")?;
     let response = executor.execute(&request).await.context("request failed")?;
 
+    if let Some(collection) = &collection {
+        if collection.manifest.history.unwrap_or(true) {
+            if let Err(err) = crate::history::append_entry(&collection.root, &request, &response) {
+                eprintln!("Warning: failed to write history entry: {err:#}");
+            }
+        }
+    }
+
     if verbose {
         eprint!("{}", output::format_response_head(&response));
     }
@@ -290,5 +298,62 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.downcast_ref::<crate::errors::CliError>().is_some());
+    }
+
+    #[tokio::test]
+    async fn ad_hoc_request_appends_a_history_entry_inside_a_collection() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+
+        run(vec!["GET".to_string(), server.uri()], dir.path())
+            .await
+            .unwrap();
+
+        assert_eq!(crate::history::read_entries(dir.path()).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn ad_hoc_request_skips_history_outside_a_collection() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+
+        run(vec!["GET".to_string(), server.uri()], dir.path())
+            .await
+            .unwrap();
+
+        assert!(!dir.path().join(".epistola").is_dir());
+    }
+
+    #[tokio::test]
+    async fn ad_hoc_request_respects_the_collections_history_default() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("epistola.toml"),
+            "name = \"n\"\nhistory = false\n",
+        )
+        .unwrap();
+
+        run(vec!["GET".to_string(), server.uri()], dir.path())
+            .await
+            .unwrap();
+
+        assert!(!dir.path().join(".epistola").is_dir());
     }
 }

@@ -61,6 +61,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
     resolver = resolver.layer(unresolved.variables.clone());
     resolver = resolver.layer(parse_var_overrides(&args.vars)?);
 
+    let history_enabled = unresolved.history_enabled(collection.manifest.history);
     let request = unresolved.resolve(&resolver, base_dir)?;
 
     if args.verbose {
@@ -73,6 +74,12 @@ pub async fn run(args: RunArgs) -> Result<()> {
     let executor =
         ReqwestExecutor::with_config(client_config).context("invalid client configuration")?;
     let response = executor.execute(&request).await.context("request failed")?;
+
+    if history_enabled {
+        if let Err(err) = crate::history::append_entry(&collection.root, &request, &response) {
+            eprintln!("Warning: failed to write history entry: {err:#}");
+        }
+    }
 
     if args.verbose {
         eprint!("{}", output::format_response_head(&response));
@@ -427,5 +434,177 @@ mod tests {
         };
 
         run(args).await.unwrap();
+    }
+
+    fn run_args(path: PathBuf) -> RunArgs {
+        RunArgs {
+            path,
+            env: None,
+            vars: Vec::new(),
+            json: false,
+            output: None,
+            check_status: false,
+            verbose: false,
+            client: ClientArgs::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_appends_a_history_entry_by_default() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        write(
+            dir.path(),
+            "a.req.toml",
+            &format!(
+                "[request]\nname = \"n\"\nmethod = \"GET\"\nurl = \"{}\"\n",
+                server.uri()
+            ),
+        );
+
+        run(run_args(dir.path().join("a.req.toml"))).await.unwrap();
+
+        let entries = crate::history::read_entries(dir.path()).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["response"]["status"], 200);
+    }
+
+    #[tokio::test]
+    async fn run_skips_history_when_the_collection_disables_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "epistola.toml",
+            "name = \"n\"\nhistory = false\n",
+        );
+        write(
+            dir.path(),
+            "a.req.toml",
+            &format!(
+                "[request]\nname = \"n\"\nmethod = \"GET\"\nurl = \"{}\"\n",
+                server.uri()
+            ),
+        );
+
+        run(run_args(dir.path().join("a.req.toml"))).await.unwrap();
+
+        assert!(!dir.path().join(".epistola").is_dir());
+    }
+
+    #[tokio::test]
+    async fn run_lets_a_folder_override_re_enable_history_under_a_disabled_collection() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "epistola.toml",
+            "name = \"n\"\nhistory = false\n",
+        );
+        write(dir.path(), "folder.toml", "history = true\n");
+        write(
+            dir.path(),
+            "a.req.toml",
+            &format!(
+                "[request]\nname = \"n\"\nmethod = \"GET\"\nurl = \"{}\"\n",
+                server.uri()
+            ),
+        );
+
+        run(run_args(dir.path().join("a.req.toml"))).await.unwrap();
+
+        assert_eq!(crate::history::read_entries(dir.path()).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn run_lets_the_requests_own_history_field_win_over_a_folder_override() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        write(dir.path(), "folder.toml", "history = true\n");
+        write(
+            dir.path(),
+            "a.req.toml",
+            &format!(
+                "[request]\nname = \"n\"\nmethod = \"GET\"\nurl = \"{}\"\nhistory = false\n",
+                server.uri()
+            ),
+        );
+
+        run(run_args(dir.path().join("a.req.toml"))).await.unwrap();
+
+        assert!(!dir.path().join(".epistola").is_dir());
+    }
+
+    #[tokio::test]
+    async fn run_still_logs_when_check_status_turns_the_response_into_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        write(
+            dir.path(),
+            "a.req.toml",
+            &format!(
+                "[request]\nname = \"n\"\nmethod = \"GET\"\nurl = \"{}\"\n",
+                server.uri()
+            ),
+        );
+
+        let mut args = run_args(dir.path().join("a.req.toml"));
+        args.check_status = true;
+        let _ = run(args).await;
+
+        assert_eq!(crate::history::read_entries(dir.path()).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn history_write_failure_does_not_fail_the_run() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        write(
+            dir.path(),
+            "a.req.toml",
+            &format!(
+                "[request]\nname = \"n\"\nmethod = \"GET\"\nurl = \"{}\"\n",
+                server.uri()
+            ),
+        );
+        // A *file* named `.epistola` makes `create_dir_all` fail inside
+        // `history::append_entry`.
+        std::fs::write(dir.path().join(".epistola"), "not a directory").unwrap();
+
+        run(run_args(dir.path().join("a.req.toml"))).await.unwrap();
     }
 }

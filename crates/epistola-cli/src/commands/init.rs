@@ -31,7 +31,7 @@ pub fn run(args: InitArgs) -> Result<()> {
     CollectionManifest::create(&manifest_path, &name, args.description.as_deref())
         .with_context(|| format!("failed to create '{}'", manifest_path.display()))?;
 
-    append_secrets_gitignore(&args.path)?;
+    append_gitignore_entries(&args.path, &["*.secrets.toml", ".epistola/"])?;
 
     println!("Initialized collection '{name}' at {}", args.path.display());
     Ok(())
@@ -44,24 +44,32 @@ fn default_collection_name(path: &std::path::Path) -> String {
         .unwrap_or_else(|| "collection".to_string())
 }
 
-/// Appends `*.secrets.toml` to `.gitignore`, creating it if needed.
-fn append_secrets_gitignore(collection_root: &std::path::Path) -> Result<()> {
-    let entry = "*.secrets.toml";
+/// Appends any of `entries` not already present to `.gitignore`, creating
+/// it if needed. Used for `*.secrets.toml` (environment/global secrets)
+/// and `.epistola/` (the local history log) — anything generated on this
+/// machine that shouldn't be committed.
+fn append_gitignore_entries(collection_root: &std::path::Path, entries: &[&str]) -> Result<()> {
     let path = collection_root.join(".gitignore");
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut content = std::fs::read_to_string(&path).unwrap_or_default();
 
-    if existing.lines().any(|line| line.trim() == entry) {
-        return Ok(());
-    }
-
-    let mut content = existing;
-    if !content.is_empty() && !content.ends_with('\n') {
+    let mut changed = false;
+    for entry in entries {
+        if content.lines().any(|line| line.trim() == *entry) {
+            continue;
+        }
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str(entry);
         content.push('\n');
+        changed = true;
     }
-    content.push_str(entry);
-    content.push('\n');
 
-    std::fs::write(&path, content).with_context(|| format!("failed to write '{}'", path.display()))
+    if changed {
+        std::fs::write(&path, content)
+            .with_context(|| format!("failed to write '{}'", path.display()))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -87,6 +95,7 @@ mod tests {
 
         let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(gitignore.contains("*.secrets.toml"));
+        assert!(gitignore.contains(".epistola/"));
     }
 
     #[test]
@@ -103,21 +112,32 @@ mod tests {
     }
 
     #[test]
-    fn append_secrets_gitignore_does_not_duplicate_an_existing_entry() {
+    fn append_gitignore_entries_does_not_duplicate_an_existing_entry() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join(".gitignore"), "*.secrets.toml\n").unwrap();
-        append_secrets_gitignore(dir.path()).unwrap();
+        append_gitignore_entries(dir.path(), &["*.secrets.toml"]).unwrap();
         let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert_eq!(content.matches("*.secrets.toml").count(), 1);
     }
 
     #[test]
-    fn append_secrets_gitignore_preserves_existing_content() {
+    fn append_gitignore_entries_preserves_existing_content() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join(".gitignore"), "/target\n").unwrap();
-        append_secrets_gitignore(dir.path()).unwrap();
+        append_gitignore_entries(dir.path(), &["*.secrets.toml"]).unwrap();
         let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(content.contains("/target"));
         assert!(content.contains("*.secrets.toml"));
+    }
+
+    #[test]
+    fn append_gitignore_entries_does_not_duplicate_any_entry_across_multiple_calls() {
+        let dir = tempdir().unwrap();
+        append_gitignore_entries(dir.path(), &["*.secrets.toml", ".epistola/"]).unwrap();
+        append_gitignore_entries(dir.path(), &["*.secrets.toml", ".epistola/"]).unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert_eq!(content.matches("*.secrets.toml").count(), 1);
+        assert_eq!(content.matches(".epistola/").count(), 1);
     }
 }

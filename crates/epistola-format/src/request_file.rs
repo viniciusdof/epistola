@@ -34,6 +34,12 @@ pub struct RequestSpec {
     /// [`UnresolvedRequest::with_folder_inheritance`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthSpec>,
+    /// `None` (the key absent) means "no opinion, inherit from the nearest
+    /// ancestor `folder.toml`, then the collection default." `Some(_)`
+    /// wins outright, same rules as `auth`. See
+    /// [`UnresolvedRequest::history_enabled`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<bool>,
     #[serde(default, skip_serializing_if = "BodySpec::is_none")]
     pub body: BodySpec,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -160,6 +166,7 @@ pub struct UnresolvedRequest {
     pub request: Request,
     pub body: BodySpec,
     pub auth: Option<AuthSpec>,
+    pub history: Option<bool>,
     pub variables: BTreeMap<String, String>,
 }
 
@@ -234,6 +241,7 @@ impl RequestFile {
                     })
                     .collect(),
                 auth: None,
+                history: None,
                 body,
                 variables: BTreeMap::new(),
             },
@@ -275,6 +283,7 @@ impl RequestFile {
             request,
             body: self.request.body.clone(),
             auth: self.request.auth.clone(),
+            history: self.request.history,
             variables: self.request.variables.clone(),
         }
     }
@@ -312,7 +321,21 @@ impl UnresolvedRequest {
             self.auth = chain.iter().rev().find_map(|f| f.auth.clone());
         }
 
+        if self.history.is_none() {
+            self.history = chain.iter().rev().find_map(|f| f.history);
+        }
+
         self
+    }
+
+    /// Resolves whether this execution should be appended to the
+    /// collection's history log. Nearest-explicit-wins, same chain as
+    /// `auth`: this request's own `history` (already folded with any
+    /// `folder.toml` chain by [`Self::with_folder_inheritance`]) wins if
+    /// set, else the collection manifest's `history`, else `true` —
+    /// history logging is opt-out, not opt-in.
+    pub fn history_enabled(&self, collection_default: Option<bool>) -> bool {
+        self.history.or(collection_default).unwrap_or(true)
     }
 
     /// Interpolates, encodes the body, and folds `auth` into an
@@ -1151,6 +1174,7 @@ mod tests {
                 disabled: false,
             }],
             auth: None,
+            history: None,
         }
     }
 
@@ -1232,12 +1256,14 @@ mod tests {
                 auth: Some(AuthSpec::Bearer {
                     token: "{{root_token}}".to_string(),
                 }),
+                history: None,
             },
             FolderManifest {
                 headers: Vec::new(),
                 auth: Some(AuthSpec::Bearer {
                     token: "{{nested_token}}".to_string(),
                 }),
+                history: None,
             },
         ];
         let unresolved = file.to_unresolved().with_folder_inheritance(&chain);
@@ -1267,6 +1293,7 @@ mod tests {
             auth: Some(AuthSpec::Bearer {
                 token: "{{folder_token}}".to_string(),
             }),
+            history: None,
         }];
         let unresolved = file.to_unresolved().with_folder_inheritance(&chain);
 
@@ -1294,6 +1321,7 @@ mod tests {
             auth: Some(AuthSpec::Bearer {
                 token: "{{token}}".to_string(),
             }),
+            history: None,
         }];
         let unresolved = file.to_unresolved().with_folder_inheritance(&chain);
         let request = unresolved.resolve(&resolver(&[]), Path::new(".")).unwrap();
@@ -1324,5 +1352,103 @@ mod tests {
         assert_eq!(unresolved.request.headers.len(), 1);
         assert_eq!(unresolved.request.headers[0].name, "X-Own");
         assert!(unresolved.auth.is_none());
+    }
+
+    #[test]
+    fn parses_an_explicit_history_field_on_a_request() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "GET"
+            url = "https://x.test"
+            history = false
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(file.request.history, Some(false));
+    }
+
+    #[test]
+    fn history_enabled_defaults_to_true_with_nothing_configured() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "GET"
+            url = "https://x.test"
+            "#,
+        )
+        .unwrap();
+        let unresolved = file.to_unresolved().with_folder_inheritance(&[]);
+
+        assert!(unresolved.history_enabled(None));
+    }
+
+    #[test]
+    fn history_enabled_honors_an_explicit_collection_level_false() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "GET"
+            url = "https://x.test"
+            "#,
+        )
+        .unwrap();
+        let unresolved = file.to_unresolved().with_folder_inheritance(&[]);
+
+        assert!(!unresolved.history_enabled(Some(false)));
+    }
+
+    #[test]
+    fn with_folder_inheritance_picks_the_nearest_ancestor_history_override() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "GET"
+            url = "https://x.test"
+            "#,
+        )
+        .unwrap();
+        let chain = vec![
+            FolderManifest {
+                headers: Vec::new(),
+                auth: None,
+                history: Some(true),
+            },
+            FolderManifest {
+                headers: Vec::new(),
+                auth: None,
+                history: Some(false),
+            },
+        ];
+        let unresolved = file.to_unresolved().with_folder_inheritance(&chain);
+
+        assert!(!unresolved.history_enabled(Some(true)));
+    }
+
+    #[test]
+    fn with_folder_inheritance_leaves_the_requests_own_history_untouched() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "GET"
+            url = "https://x.test"
+            history = true
+            "#,
+        )
+        .unwrap();
+        let chain = vec![FolderManifest {
+            headers: Vec::new(),
+            auth: None,
+            history: Some(false),
+        }];
+        let unresolved = file.to_unresolved().with_folder_inheritance(&chain);
+
+        assert!(unresolved.history_enabled(Some(false)));
     }
 }

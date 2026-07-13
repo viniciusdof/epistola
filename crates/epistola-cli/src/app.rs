@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::commands::{completions, env, folder, init, request, run};
+use crate::commands::{completions, env, folder, history, init, request, run};
 
 /// A Rust-native HTTP client, built for the terminal.
 #[derive(Parser, Debug)]
@@ -22,6 +22,8 @@ pub enum Command {
     Folder(folder::FolderArgs),
     /// Resolve and execute a saved request
     Run(run::RunArgs),
+    /// View, inspect, or clear the collection's request history log
+    History(history::HistoryArgs),
     /// Generate a shell completion script, printed to stdout
     Completions(completions::CompletionsArgs),
     /// Falls through to an ad-hoc request: `epistola GET <url> ...`

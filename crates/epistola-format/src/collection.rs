@@ -20,6 +20,13 @@ pub struct CollectionManifest {
     /// `--env` isn't given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_environment: Option<String>,
+    /// Collection-wide default for whether executed requests are appended
+    /// to the local history log. `None` (the key absent) means "default to
+    /// enabled." Same nearest-explicit-wins chain as `folder.toml`'s and
+    /// `.req.toml`'s `history` fields — see
+    /// [`crate::UnresolvedRequest::history_enabled`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<bool>,
 }
 
 impl CollectionManifest {
@@ -40,6 +47,7 @@ impl CollectionManifest {
             variables: BTreeMap::new(),
             client: ClientSpec::default(),
             default_environment: None,
+            history: None,
         };
         write_toml_file(path, &manifest)
     }
@@ -173,6 +181,23 @@ mod tests {
             CollectionManifest::load(&path).unwrap().default_environment,
             None
         );
+    }
+
+    #[test]
+    fn create_defaults_history_to_none() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("epistola.toml");
+        CollectionManifest::create(&path, "n", None).unwrap();
+        assert_eq!(CollectionManifest::load(&path).unwrap().history, None);
+    }
+
+    #[test]
+    fn parses_an_explicit_history_false() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("epistola.toml");
+        std::fs::write(&path, "name = \"n\"\nhistory = false\n").unwrap();
+        let manifest = CollectionManifest::load(&path).unwrap();
+        assert_eq!(manifest.history, Some(false));
     }
 
     #[test]

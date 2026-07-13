@@ -31,6 +31,8 @@ pub enum RequestAction {
     Delete(DeleteArgs),
     /// Rename a request, updating both its file name and its `name` field
     Rename(RenameArgs),
+    /// Copy a request to a new file under a new name, in the same directory
+    Duplicate(DuplicateArgs),
 }
 
 #[derive(Args, Debug)]
@@ -89,6 +91,12 @@ pub struct RenameArgs {
     pub name: String,
 }
 
+#[derive(Args, Debug)]
+pub struct DuplicateArgs {
+    pub path: PathBuf,
+    pub name: String,
+}
+
 pub fn run(args: RequestArgs, cwd: &Path) -> Result<()> {
     match args.action {
         RequestAction::New(a) => new(a, cwd),
@@ -98,6 +106,7 @@ pub fn run(args: RequestArgs, cwd: &Path) -> Result<()> {
         RequestAction::Lint(a) => lint(a, cwd),
         RequestAction::Delete(a) => delete(a),
         RequestAction::Rename(a) => rename(a),
+        RequestAction::Duplicate(a) => duplicate(a),
     }
 }
 
@@ -361,6 +370,28 @@ fn rename(args: RenameArgs) -> Result<()> {
     }
 
     println!("Renamed {} to {}", args.path.display(), new_path.display());
+    Ok(())
+}
+
+fn duplicate(args: DuplicateArgs) -> Result<()> {
+    let mut file = RequestFile::load(&args.path)
+        .with_context(|| format!("failed to load '{}'", args.path.display()))?;
+    file.request.name = args.name.clone();
+
+    let dir = args
+        .path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let new_path = dir.join(format!("{}.req.toml", slugify(&args.name)));
+
+    file.create_at(&new_path)
+        .with_context(|| format!("failed to create '{}'", new_path.display()))?;
+
+    println!(
+        "Duplicated {} to {}",
+        args.path.display(),
+        new_path.display()
+    );
     Ok(())
 }
 
@@ -778,5 +809,54 @@ mod tests {
 
         let file = RequestFile::load(&path).unwrap();
         assert_eq!(file.request.name, "A");
+    }
+
+    #[test]
+    fn duplicate_creates_a_new_file_and_preserves_the_original() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("a.req.toml");
+        RequestFile::create(&path, "A", "GET", "https://x.test").unwrap();
+
+        duplicate(DuplicateArgs {
+            path: path.clone(),
+            name: "A Copy".to_string(),
+        })
+        .unwrap();
+
+        assert!(path.is_file());
+        let original = RequestFile::load(&path).unwrap();
+        assert_eq!(original.request.name, "A");
+
+        let new_path = dir.path().join("a-copy.req.toml");
+        let copy = RequestFile::load(&new_path).unwrap();
+        assert_eq!(copy.request.name, "A Copy");
+        assert_eq!(copy.request.url, "https://x.test");
+    }
+
+    #[test]
+    fn duplicate_refuses_to_overwrite_an_existing_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("a.req.toml");
+        RequestFile::create(&path, "A", "GET", "https://x.test").unwrap();
+        RequestFile::create(&dir.path().join("b.req.toml"), "B", "GET", "https://y.test").unwrap();
+
+        assert!(duplicate(DuplicateArgs {
+            path,
+            name: "B".to_string(),
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn duplicate_onto_the_same_name_errors_instead_of_overwriting_the_source() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("a.req.toml");
+        RequestFile::create(&path, "A", "GET", "https://x.test").unwrap();
+
+        assert!(duplicate(DuplicateArgs {
+            path,
+            name: "A".to_string(),
+        })
+        .is_err());
     }
 }

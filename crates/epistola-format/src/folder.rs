@@ -20,6 +20,13 @@ pub struct FolderManifest {
     /// inheritance from going any further up the tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthSpec>,
+    /// Overrides the collection's history-logging default for every
+    /// request under this directory, unless a closer folder or the request
+    /// itself has its own opinion. `None` means "no opinion, keep asking my
+    /// parent folder." See
+    /// [`crate::UnresolvedRequest::history_enabled`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<bool>,
 }
 
 impl FolderManifest {
@@ -116,6 +123,16 @@ mod tests {
         let manifest = FolderManifest::load(&path).unwrap();
         assert_eq!(manifest.headers[0].name, "X-Api-Version");
         assert!(matches!(manifest.auth, Some(AuthSpec::Bearer { .. })));
+    }
+
+    #[test]
+    fn parses_an_explicit_history_override() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("folder.toml");
+        std::fs::write(&path, "history = false\n").unwrap();
+
+        let manifest = FolderManifest::load(&path).unwrap();
+        assert_eq!(manifest.history, Some(false));
     }
 
     #[test]
