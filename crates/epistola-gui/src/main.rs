@@ -1,40 +1,48 @@
-use gpui::{
-    div, prelude::*, px, rgb, size, App, Bounds, Context, Window, WindowBounds, WindowOptions,
-};
+mod actions;
+mod assets;
+mod collection;
+mod components;
+mod execution;
+mod root;
+mod state;
+mod theme;
 
-struct EpistolaGui;
+use std::env;
 
-impl Render for EpistolaGui {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .size_full()
-            .justify_center()
-            .items_center()
-            .bg(rgb(0x1e1e1e))
-            .text_color(rgb(0xffffff))
-            .text_xl()
-            .child("epistola")
-    }
-}
+use gpui::{prelude::*, px, size, App, Bounds, WindowBounds, WindowOptions};
+
+use assets::Assets;
+use root::EpistolaGui;
 
 fn main() {
-    gpui_platform::application().run(|cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(800.0), px(600.0)), cx);
-        let window = cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                ..Default::default()
-            },
-            |_, cx| cx.new(|_| EpistolaGui),
-        );
+    match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => execution::install(runtime),
+        Err(err) => eprintln!("failed to start async runtime, requests won't be sendable: {err}"),
+    }
 
-        match window {
-            Ok(_) => cx.activate(true),
-            Err(err) => {
-                eprintln!("failed to open window: {err}");
-                cx.quit();
+    let cwd = env::current_dir().unwrap_or_default();
+
+    gpui_platform::application()
+        .with_assets(Assets)
+        .run(move |cx: &mut App| {
+            let bounds = Bounds::centered(None, size(px(1080.0), px(700.0)), cx);
+            let window = cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                |_, cx| cx.new(|_| EpistolaGui::new(cwd.clone())),
+            );
+
+            match window {
+                Ok(_) => cx.activate(true),
+                Err(err) => {
+                    eprintln!("failed to open window: {err}");
+                    cx.quit();
+                }
             }
-        }
-    });
+        });
 }

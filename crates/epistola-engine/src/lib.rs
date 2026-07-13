@@ -14,6 +14,7 @@ pub mod folder;
 pub mod history;
 pub mod init;
 pub mod output;
+pub mod recent;
 pub mod requests;
 pub mod resolve;
 pub mod run;

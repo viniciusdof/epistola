@@ -17,6 +17,11 @@ gpui = { git = "https://github.com/zed-industries/zed", tag = "v1.10.3" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", tag = "v1.10.3", features = [
     "font-kit",
 ] }
+epistola-core.workspace = true
+epistola-format.workspace = true
+epistola-engine.workspace = true
+tokio.workspace = true
+rust-embed.workspace = true
 
 [lints]
 workspace = true

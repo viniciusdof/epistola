@@ -1,10 +1,16 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
 
 use crate::error::FormatError;
 use crate::variables_file::load_with_secrets_sidecar;
+
+pub fn global_config_dir() -> Result<PathBuf, FormatError> {
+    ProjectDirs::from("", "", "epistola")
+        .map(|dirs| dirs.config_dir().to_path_buf())
+        .ok_or(FormatError::NoHomeDirectory)
+}
 
 /// Loads `<config_dir>/config.toml` + secrets sidecar. Missing is not an
 /// error — global config is optional.
@@ -17,10 +23,8 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<BTreeMap<String, String
     load_with_secrets_sidecar(&public_path, &secrets_path)
 }
 
-/// Resolves the OS-idiomatic config directory and loads the global config.
 pub fn load_global_config() -> Result<BTreeMap<String, String>, FormatError> {
-    let dirs = ProjectDirs::from("", "", "epistola").ok_or(FormatError::NoHomeDirectory)?;
-    load_from_dir(dirs.config_dir())
+    load_from_dir(&global_config_dir()?)
 }
 
 #[cfg(test)]

@@ -23,7 +23,7 @@ pub use environment::{
 };
 pub use error::FormatError;
 pub use folder::{load_folder_chain, FolderManifest};
-pub use global_config::load_global_config;
+pub use global_config::{global_config_dir, load_global_config};
 pub use loader::LoadedCollection;
 pub use request_file::{
     encode_multipart, generate_boundary, ApiKeyLocation, AuthSpec, BodySpec, FormField,

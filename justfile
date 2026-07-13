@@ -60,3 +60,8 @@ build:
 [group('build')]
 run *ARGS:
     cargo run -p epistola-cli -- {{ ARGS }}
+
+# Run the GPUI desktop client.
+[group('build')]
+run-gui:
+    cargo run -p epistola-gui
