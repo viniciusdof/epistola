@@ -46,6 +46,11 @@ pub struct Cli {
     #[arg(long)]
     pub check_status: bool,
 
+    /// Print the raw request before sending and the response status/headers
+    /// after, both to stderr (like `curl -v`) — stdout output is unaffected
+    #[arg(short = 'v', long)]
+    pub verbose: bool,
+
     #[command(flatten)]
     pub client: ClientArgs,
 }

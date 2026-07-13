@@ -5,4 +5,6 @@
 pub enum CliError {
     #[error("HTTP status {0} indicates failure (--check-status)")]
     HttpStatus(u16),
+    #[error("{0} request file(s) failed lint")]
+    LintFailed(usize),
 }

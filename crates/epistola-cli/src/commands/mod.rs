@@ -1,3 +1,4 @@
+pub mod completions;
 pub mod env;
 pub mod init;
 pub mod request;

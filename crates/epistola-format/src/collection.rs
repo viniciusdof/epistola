@@ -62,6 +62,14 @@ pub struct ClientSpec {
     pub max_redirects: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<String>,
+    /// Skip TLS certificate validation for every request in this collection
+    /// unless overridden. Dangerous.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub insecure: bool,
+    /// Path (relative to the collection root) to a combined cert+key PEM
+    /// file, for mutual-TLS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_cert: Option<String>,
 }
 
 impl ClientSpec {
@@ -95,7 +103,7 @@ mod tests {
         let path = dir.path().join("epistola.toml");
         std::fs::write(
             &path,
-            "name = \"n\"\n\n[client]\ntimeout_secs = 30\nmax_redirects = 0\nproxy = \"http://proxy.local:8080\"\n",
+            "name = \"n\"\n\n[client]\ntimeout_secs = 30\nmax_redirects = 0\nproxy = \"http://proxy.local:8080\"\ninsecure = true\nclient_cert = \"client.pem\"\n",
         )
         .unwrap();
         let manifest = CollectionManifest::load(&path).unwrap();
@@ -105,6 +113,8 @@ mod tests {
             manifest.client.proxy.as_deref(),
             Some("http://proxy.local:8080")
         );
+        assert!(manifest.client.insecure);
+        assert_eq!(manifest.client.client_cert.as_deref(), Some("client.pem"));
     }
 
     #[test]

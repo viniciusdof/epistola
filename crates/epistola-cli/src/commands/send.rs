@@ -17,14 +17,18 @@ pub async fn run(args: Vec<String>, cwd: &Path) -> Result<()> {
     let save_as = cli.save.clone();
     let output_path = cli.output.clone();
     let check_status = cli.check_status;
+    let verbose = cli.verbose;
     // Computed before `into_request` consumes `cli`; a `multipart` body
     // can't be reconstructed from its already-encoded bytes, so `--save`
     // needs the pre-encoding structure.
     let body_spec = cli.ad_hoc_body()?.into_body_spec();
-    let collection_client = LoadedCollection::discover_from(cwd)
-        .ok()
-        .map(|c| c.manifest.client);
-    let client_config = cli.client.resolve(&collection_client.unwrap_or_default());
+    let collection = LoadedCollection::discover_from(cwd).ok();
+    let client_spec = collection
+        .as_ref()
+        .map(|c| c.manifest.client.clone())
+        .unwrap_or_default();
+    let base_dir = collection.as_ref().map(|c| c.root.as_path()).unwrap_or(cwd);
+    let client_config = cli.client.resolve(&client_spec, base_dir)?;
     let request = cli.into_request(cwd)?;
 
     // Fail fast on a bad --save before wasting a real network call.
@@ -33,9 +37,17 @@ pub async fn run(args: Vec<String>, cwd: &Path) -> Result<()> {
         None => None,
     };
 
+    if verbose {
+        eprint!("{}", output::format_request(&request));
+    }
+
     let executor =
         ReqwestExecutor::with_config(client_config).context("invalid client configuration")?;
     let response = executor.execute(&request).await.context("request failed")?;
+
+    if verbose {
+        eprint!("{}", output::format_response_head(&response));
+    }
 
     if let Some(path) = &output_path {
         output::write_response_body(&response, path)
@@ -137,6 +149,25 @@ mod tests {
                 entry.path().extension().and_then(|e| e.to_str()) != Some("toml")
                     || entry.file_name() == "epistola.toml"
             }));
+    }
+
+    #[tokio::test]
+    async fn verbose_flag_does_not_change_a_successful_ad_hoc_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+
+        run(
+            vec!["GET".to_string(), server.uri(), "-v".to_string()],
+            dir.path(),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

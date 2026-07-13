@@ -33,6 +33,7 @@ async fn run() -> Result<()> {
         Command::Request(args) => commands::request::run(args, &cwd),
         Command::Env(args) => commands::env::run(args, &cwd),
         Command::Run(args) => commands::run::run(args).await,
+        Command::Completions(args) => commands::completions::run(args),
         Command::Send(args) => commands::send::run(args, &cwd).await,
     }
 }

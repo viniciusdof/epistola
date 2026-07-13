@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::commands::{env, init, request, run};
+use crate::commands::{completions, env, init, request, run};
 
 /// A Rust-native HTTP client, built for the terminal.
 #[derive(Parser, Debug)]
@@ -20,7 +20,19 @@ pub enum Command {
     Env(env::EnvArgs),
     /// Resolve and execute a saved request
     Run(run::RunArgs),
+    /// Generate a shell completion script, printed to stdout
+    Completions(completions::CompletionsArgs),
     /// Falls through to an ad-hoc request: `epistola GET <url> ...`
     #[command(external_subcommand)]
     Send(Vec<String>),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_definition_is_well_formed() {
+        <App as clap::CommandFactory>::command().debug_assert();
+    }
 }

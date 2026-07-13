@@ -34,6 +34,11 @@ pub struct RunArgs {
     #[arg(long)]
     pub check_status: bool,
 
+    /// Print the raw request before sending and the response status/headers
+    /// after, both to stderr (like `curl -v`) — stdout output is unaffected
+    #[arg(short = 'v', long)]
+    pub verbose: bool,
+
     #[command(flatten)]
     pub client: ClientArgs,
 }
@@ -56,9 +61,20 @@ pub async fn run(args: RunArgs) -> Result<()> {
         .unwrap_or_else(|| std::path::Path::new("."));
     let request = unresolved.resolve(&resolver, base_dir)?;
 
-    let executor = ReqwestExecutor::with_config(args.client.resolve(&collection.manifest.client))
-        .context("invalid client configuration")?;
+    if args.verbose {
+        eprint!("{}", output::format_request(&request));
+    }
+
+    let client_config = args
+        .client
+        .resolve(&collection.manifest.client, &collection.root)?;
+    let executor =
+        ReqwestExecutor::with_config(client_config).context("invalid client configuration")?;
     let response = executor.execute(&request).await.context("request failed")?;
+
+    if args.verbose {
+        eprint!("{}", output::format_response_head(&response));
+    }
 
     if let Some(path) = &args.output {
         output::write_response_body(&response, path)
@@ -156,6 +172,40 @@ mod tests {
             json: false,
             output: None,
             check_status: false,
+            verbose: false,
+            client: ClientArgs::default(),
+        };
+
+        run(args).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn verbose_flag_does_not_change_a_successful_run() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        write(
+            dir.path(),
+            "a.req.toml",
+            &format!(
+                "[request]\nname = \"n\"\nmethod = \"GET\"\nurl = \"{}\"\n",
+                server.uri()
+            ),
+        );
+
+        let args = RunArgs {
+            path: dir.path().join("a.req.toml"),
+            env: None,
+            vars: Vec::new(),
+            json: false,
+            output: None,
+            check_status: false,
+            verbose: true,
             client: ClientArgs::default(),
         };
 
@@ -179,6 +229,7 @@ mod tests {
             json: false,
             output: None,
             check_status: false,
+            verbose: false,
             client: ClientArgs::default(),
         };
 
@@ -212,6 +263,7 @@ mod tests {
             json: false,
             output: Some(output_path.clone()),
             check_status: false,
+            verbose: false,
             client: ClientArgs::default(),
         };
 
@@ -246,6 +298,7 @@ mod tests {
             json: false,
             output: None,
             check_status: true,
+            verbose: false,
             client: ClientArgs::default(),
         };
 
@@ -279,6 +332,7 @@ mod tests {
             json: false,
             output: None,
             check_status: true,
+            verbose: false,
             client: ClientArgs::default(),
         };
 
