@@ -14,13 +14,13 @@ mod request_file;
 mod toml_file;
 mod variables_file;
 
-pub use collection::CollectionManifest;
+pub use collection::{ClientSpec, CollectionManifest};
 pub use discovery::find_collection_root;
 pub use environment::{create_environment, load_environment, set_environment_variable};
 pub use error::FormatError;
 pub use global_config::load_global_config;
 pub use loader::LoadedCollection;
 pub use request_file::{
-    AuthSpec, BodySpec, FormField, HeaderEntry, QueryEntry, RequestFile, RequestSpec,
-    UnresolvedRequest,
+    encode_multipart, generate_boundary, ApiKeyLocation, AuthSpec, BodySpec, FormField,
+    HeaderEntry, MultipartPart, QueryEntry, RequestFile, RequestSpec, UnresolvedRequest,
 };

@@ -14,7 +14,15 @@ use crate::output;
 pub async fn run(args: Vec<String>, cwd: &Path) -> Result<()> {
     let cli = Cli::try_parse_from(std::iter::once("epistola".to_string()).chain(args))?;
     let save_as = cli.save.clone();
-    let request = cli.into_request()?;
+    // Computed before `into_request` consumes `cli`; a `multipart` body
+    // can't be reconstructed from its already-encoded bytes, so `--save`
+    // needs the pre-encoding structure.
+    let body_spec = cli.ad_hoc_body()?.into_body_spec();
+    let collection_client = LoadedCollection::discover_from(cwd)
+        .ok()
+        .map(|c| c.manifest.client);
+    let client_config = cli.client.resolve(&collection_client.unwrap_or_default());
+    let request = cli.into_request(cwd)?;
 
     // Fail fast on a bad --save before wasting a real network call.
     let save_path = match &save_as {
@@ -22,13 +30,14 @@ pub async fn run(args: Vec<String>, cwd: &Path) -> Result<()> {
         None => None,
     };
 
-    let executor = ReqwestExecutor::new();
+    let executor =
+        ReqwestExecutor::with_config(client_config).context("invalid client configuration")?;
     let response = executor.execute(&request).await.context("request failed")?;
 
     print!("{}", output::format_response(&response));
 
     if let (Some(name), Some(path)) = (&save_as, &save_path) {
-        RequestFile::from_request(name, &request)
+        RequestFile::from_request_and_body(name, &request, body_spec)
             .create_at(path)
             .with_context(|| format!("failed to save request to '{}'", path.display()))?;
         println!("Saved to {}", path.display());
@@ -114,6 +123,62 @@ mod tests {
                 entry.path().extension().and_then(|e| e.to_str()) != Some("toml")
                     || entry.file_name() == "epistola.toml"
             }));
+    }
+
+    #[tokio::test]
+    async fn form_flag_sends_a_multipart_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_matcher("/upload"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        std::fs::write(dir.path().join("avatar.png"), b"pngbytes").unwrap();
+
+        let args = vec![
+            "POST".to_string(),
+            format!("{}/upload", server.uri()),
+            "-F".to_string(),
+            "caption=hi".to_string(),
+            "-F".to_string(),
+            "avatar=@avatar.png".to_string(),
+        ];
+        run(args, dir.path()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn form_flag_with_save_writes_a_reloadable_multipart_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        std::fs::write(dir.path().join("avatar.png"), b"pngbytes").unwrap();
+
+        let args = vec![
+            "POST".to_string(),
+            format!("{}/upload", server.uri()),
+            "-F".to_string(),
+            "caption=hi".to_string(),
+            "-F".to_string(),
+            "avatar=@avatar.png".to_string(),
+            "--save".to_string(),
+            "Upload avatar".to_string(),
+        ];
+        run(args, dir.path()).await.unwrap();
+
+        let saved_path = dir.path().join("upload-avatar.req.toml");
+        let file = RequestFile::load(&saved_path).unwrap();
+        assert!(matches!(
+            &file.request.body,
+            epistola_format::BodySpec::Multipart { parts } if parts.len() == 2
+        ));
     }
 
     #[test]

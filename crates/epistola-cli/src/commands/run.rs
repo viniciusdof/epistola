@@ -7,6 +7,7 @@ use epistola_core::HttpExecutor;
 use epistola_format::{LoadedCollection, RequestFile};
 use epistola_http::ReqwestExecutor;
 
+use crate::client_config::ClientArgs;
 use crate::output;
 
 #[derive(Args, Debug)]
@@ -23,6 +24,9 @@ pub struct RunArgs {
 
     #[arg(long)]
     pub json: bool,
+
+    #[command(flatten)]
+    pub client: ClientArgs,
 }
 
 pub async fn run(args: RunArgs) -> Result<()> {
@@ -37,9 +41,14 @@ pub async fn run(args: RunArgs) -> Result<()> {
     resolver = resolver.layer(unresolved.variables.clone());
     resolver = resolver.layer(parse_var_overrides(&args.vars)?);
 
-    let request = unresolved.resolve(&resolver)?;
+    let base_dir = args
+        .path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let request = unresolved.resolve(&resolver, base_dir)?;
 
-    let executor = ReqwestExecutor::new();
+    let executor = ReqwestExecutor::with_config(args.client.resolve(&collection.manifest.client))
+        .context("invalid client configuration")?;
     let response = executor.execute(&request).await.context("request failed")?;
 
     if args.json {
@@ -127,6 +136,7 @@ mod tests {
             env: Some("dev".to_string()),
             vars: vec!["greeting=hi".to_string()],
             json: false,
+            client: ClientArgs::default(),
         };
 
         run(args).await.unwrap();
@@ -147,6 +157,7 @@ mod tests {
             env: None,
             vars: Vec::new(),
             json: false,
+            client: ClientArgs::default(),
         };
 
         assert!(run(args).await.is_err());

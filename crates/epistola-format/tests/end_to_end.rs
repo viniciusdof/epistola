@@ -47,7 +47,9 @@ fn loads_a_full_collection_and_resolves_a_request_end_to_end() {
     let unresolved = file.to_unresolved();
     resolver = resolver.layer(unresolved.variables.clone());
 
-    let request = unresolved.resolve(&resolver).unwrap();
+    let request = unresolved
+        .resolve(&resolver, &dir.path().join("users"))
+        .unwrap();
 
     assert_eq!(request.url, "https://dev.test/v2/users");
     assert_eq!(request.headers[0].value, "Bearer override-token");

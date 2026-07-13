@@ -1,5 +1,6 @@
 mod app;
 mod cli;
+mod client_config;
 mod commands;
 mod output;
 

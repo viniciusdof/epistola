@@ -64,12 +64,25 @@ pub enum AuthSpec {
     Bearer {
         token: String,
     },
+    ApiKey {
+        location: ApiKeyLocation,
+        name: String,
+        value: String,
+    },
 }
 
 impl AuthSpec {
     fn is_none(&self) -> bool {
         matches!(self, AuthSpec::None)
     }
+}
+
+/// Where an `apikey` auth's name/value pair is placed on the request.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiKeyLocation {
+    Header,
+    Query,
 }
 
 /// `[request.body]`, same tagged pattern.
@@ -87,6 +100,9 @@ pub enum BodySpec {
     Form {
         fields: Vec<FormField>,
     },
+    Multipart {
+        parts: Vec<MultipartPart>,
+    },
 }
 
 impl BodySpec {
@@ -101,6 +117,39 @@ pub struct FormField {
     pub value: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
+}
+
+/// One part of a `multipart` body. `File` reads its content from disk at
+/// resolve time, relative to the request file's directory (or absolute).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum MultipartPart {
+    Text {
+        name: String,
+        value: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        disabled: bool,
+    },
+    File {
+        name: String,
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filename: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content_type: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        disabled: bool,
+    },
+}
+
+impl MultipartPart {
+    fn disabled(&self) -> bool {
+        match self {
+            MultipartPart::Text { disabled, .. } | MultipartPart::File { disabled, .. } => {
+                *disabled
+            }
+        }
+    }
 }
 
 /// A request whose `{{ var }}` placeholders haven't been substituted yet.
@@ -144,7 +193,22 @@ impl RequestFile {
                 Err(_) => BodySpec::None,
             },
         };
+        Self::from_request_and_body(name, request, body)
+    }
 
+    /// Same as [`Self::from_request`], but with an explicit `body` instead
+    /// of inferring one from `request.body`'s already-encoded bytes. Needed
+    /// when the caller still has the pre-encoding structure on hand (e.g.
+    /// the ad-hoc CLI's `-F` multipart parts), since a `multipart` body
+    /// can't be reconstructed from its encoded bytes.
+    ///
+    /// For a `multipart` body, any `Content-Type` header on `request` is
+    /// dropped: `resolve()` always regenerates that header itself (the
+    /// boundary it names must match the boundary the body was just
+    /// re-encoded with), so persisting the old one would save a header
+    /// whose boundary silently goes stale the moment the file is re-run.
+    pub fn from_request_and_body(name: &str, request: &Request, body: BodySpec) -> Self {
+        let drop_content_type = matches!(body, BodySpec::Multipart { .. });
         RequestFile {
             request: RequestSpec {
                 name: name.to_string(),
@@ -163,6 +227,7 @@ impl RequestFile {
                 headers: request
                     .headers
                     .iter()
+                    .filter(|h| !(drop_content_type && h.name.eq_ignore_ascii_case("content-type")))
                     .map(|h| HeaderEntry {
                         name: h.name.clone(),
                         value: h.value.clone(),
@@ -213,8 +278,17 @@ impl RequestFile {
 
 impl UnresolvedRequest {
     /// Interpolates, encodes the body, and folds `auth` into an
-    /// `Authorization` header. Never injects a default `Content-Type`.
-    pub fn resolve(&self, resolver: &dyn VariableResolver) -> Result<Request, FormatError> {
+    /// `Authorization` header. Never injects a default `Content-Type` —
+    /// except for `multipart`, whose `Content-Type` must carry the boundary
+    /// actually used to encode the body, so it's mechanically required
+    /// rather than guessed (same reasoning as the `Authorization` header
+    /// below). Relative `file` part paths resolve against `base_dir`,
+    /// normally the request file's own directory.
+    pub fn resolve(
+        &self,
+        resolver: &dyn VariableResolver,
+        base_dir: &std::path::Path,
+    ) -> Result<Request, FormatError> {
         let mut request = epistola_core::interpolate_request(&self.request, resolver)?;
 
         request.body = match &self.body {
@@ -229,6 +303,15 @@ impl UnresolvedRequest {
                     serializer.append_pair(&field.name, &value);
                 }
                 Body::text(serializer.finish())
+            }
+            BodySpec::Multipart { parts } => {
+                let boundary = generate_boundary();
+                let body = encode_multipart(parts, resolver, base_dir, &boundary)?;
+                request.headers.push(Header::new(
+                    "Content-Type",
+                    format!("multipart/form-data; boundary={boundary}"),
+                ));
+                Body::Bytes(body)
             }
         };
 
@@ -248,10 +331,99 @@ impl UnresolvedRequest {
                     .headers
                     .push(Header::new("Authorization", format!("Basic {credentials}")));
             }
+            AuthSpec::ApiKey {
+                location,
+                name,
+                value,
+            } => {
+                let name = epistola_core::interpolate(name, resolver)?;
+                let value = epistola_core::interpolate(value, resolver)?;
+                match location {
+                    ApiKeyLocation::Header => request.headers.push(Header::new(name, value)),
+                    ApiKeyLocation::Query => request.query.push((name, value)),
+                }
+            }
         }
 
         Ok(request)
     }
+}
+
+/// Random-enough boundary that won't collide with real body content. Uses
+/// `RandomState`'s OS-seeded hasher instead of pulling in a `rand`
+/// dependency for something that isn't a security boundary. Public so the
+/// ad-hoc CLI can encode a `multipart` body the same way a saved request
+/// does, without duplicating the encoding logic.
+pub fn generate_boundary() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+
+    let a = RandomState::new().build_hasher().finish();
+    let b = RandomState::new().build_hasher().finish();
+    format!("epistola-boundary-{a:016x}{b:016x}")
+}
+
+/// Encodes `parts` as a `multipart/form-data` body. Public for the same
+/// reason as [`generate_boundary`].
+pub fn encode_multipart(
+    parts: &[MultipartPart],
+    resolver: &dyn VariableResolver,
+    base_dir: &std::path::Path,
+    boundary: &str,
+) -> Result<Vec<u8>, FormatError> {
+    let mut body = Vec::new();
+    for part in parts.iter().filter(|p| !p.disabled()) {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        match part {
+            MultipartPart::Text { name, value, .. } => {
+                let name = epistola_core::interpolate(name, resolver)?;
+                let value = epistola_core::interpolate(value, resolver)?;
+                body.extend_from_slice(
+                    format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+                );
+                body.extend_from_slice(value.as_bytes());
+            }
+            MultipartPart::File {
+                name,
+                path,
+                filename,
+                content_type,
+                ..
+            } => {
+                let name = epistola_core::interpolate(name, resolver)?;
+                let path = epistola_core::interpolate(path, resolver)?;
+                let filename = match filename {
+                    Some(f) => epistola_core::interpolate(f, resolver)?,
+                    None => std::path::Path::new(&path)
+                        .file_name()
+                        .map(|f| f.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.clone()),
+                };
+
+                let full_path = base_dir.join(&path);
+                let content = std::fs::read(&full_path).map_err(|source| FormatError::Io {
+                    path: full_path,
+                    source,
+                })?;
+
+                body.extend_from_slice(
+                    format!(
+                        "Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\n"
+                    )
+                    .as_bytes(),
+                );
+                if let Some(content_type) = content_type {
+                    let content_type = epistola_core::interpolate(content_type, resolver)?;
+                    body.extend_from_slice(format!("Content-Type: {content_type}\r\n").as_bytes());
+                }
+                body.extend_from_slice(b"\r\n");
+                body.extend_from_slice(&content);
+            }
+        }
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    Ok(body)
 }
 
 #[cfg(test)]
@@ -379,6 +551,78 @@ mod tests {
     }
 
     #[test]
+    fn parses_apikey_auth() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "GET"
+            url = "https://x.test"
+
+            [request.auth]
+            type = "apikey"
+            location = "header"
+            name = "X-Api-Key"
+            value = "{{api_key}}"
+            "#,
+        )
+        .unwrap();
+        assert!(matches!(file.request.auth, AuthSpec::ApiKey { .. }));
+    }
+
+    #[test]
+    fn resolve_folds_a_header_apikey_into_a_custom_header() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "GET"
+            url = "https://x.test"
+
+            [request.auth]
+            type = "apikey"
+            location = "header"
+            name = "X-Api-Key"
+            value = "{{key}}"
+            "#,
+        )
+        .unwrap();
+        let request = file
+            .to_unresolved()
+            .resolve(&resolver(&[("key", "s3cr3t")]), Path::new("."))
+            .unwrap();
+        assert_eq!(request.headers[0].name, "X-Api-Key");
+        assert_eq!(request.headers[0].value, "s3cr3t");
+    }
+
+    #[test]
+    fn resolve_folds_a_query_apikey_into_the_query_string() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "GET"
+            url = "https://x.test"
+
+            [request.auth]
+            type = "apikey"
+            location = "query"
+            name = "api_key"
+            value = "{{key}}"
+            "#,
+        )
+        .unwrap();
+        let request = file
+            .to_unresolved()
+            .resolve(&resolver(&[("key", "s3cr3t")]), Path::new("."))
+            .unwrap();
+        assert_eq!(
+            request.query,
+            vec![("api_key".to_string(), "s3cr3t".to_string())]
+        );
+    }
+
+    #[test]
     fn parses_text_body() {
         let file = RequestFile::from_toml_str(
             r#"
@@ -413,7 +657,7 @@ mod tests {
         .unwrap();
         let request = file
             .to_unresolved()
-            .resolve(&resolver(&[("tok", "abc")]))
+            .resolve(&resolver(&[("tok", "abc")]), Path::new("."))
             .unwrap();
         assert_eq!(request.headers[0].value, "Bearer abc");
     }
@@ -436,7 +680,10 @@ mod tests {
         .unwrap();
         let request = file
             .to_unresolved()
-            .resolve(&resolver(&[("user", "alice"), ("pass", "secret")]))
+            .resolve(
+                &resolver(&[("user", "alice"), ("pass", "secret")]),
+                Path::new("."),
+            )
             .unwrap();
         assert_eq!(
             request.headers[0].value,
@@ -464,7 +711,7 @@ mod tests {
         .unwrap();
         let request = file
             .to_unresolved()
-            .resolve(&resolver(&[("tok", "a b")]))
+            .resolve(&resolver(&[("tok", "a b")]), Path::new("."))
             .unwrap();
         assert_eq!(request.body, Body::text("token=a+b"));
     }
@@ -484,11 +731,171 @@ mod tests {
             "#,
         )
         .unwrap();
-        let request = file.to_unresolved().resolve(&resolver(&[])).unwrap();
+        let request = file
+            .to_unresolved()
+            .resolve(&resolver(&[]), Path::new("."))
+            .unwrap();
         assert!(!request
             .headers
             .iter()
             .any(|h| h.name.eq_ignore_ascii_case("content-type")));
+    }
+
+    #[test]
+    fn parses_multipart_body() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "POST"
+            url = "https://x.test"
+
+            [request.body]
+            type = "multipart"
+
+            [[request.body.parts]]
+            type = "text"
+            name = "field"
+            value = "value"
+
+            [[request.body.parts]]
+            type = "file"
+            name = "avatar"
+            path = "avatar.png"
+            "#,
+        )
+        .unwrap();
+        assert!(matches!(file.request.body, BodySpec::Multipart { .. }));
+    }
+
+    #[test]
+    fn resolve_encodes_a_multipart_text_field_and_sets_the_boundary_content_type() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "POST"
+            url = "https://x.test"
+
+            [request.body]
+            type = "multipart"
+
+            [[request.body.parts]]
+            type = "text"
+            name = "field"
+            value = "{{val}}"
+            "#,
+        )
+        .unwrap();
+        let request = file
+            .to_unresolved()
+            .resolve(&resolver(&[("val", "hello")]), Path::new("."))
+            .unwrap();
+
+        let content_type = &request
+            .headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("content-type"))
+            .unwrap()
+            .value;
+        assert!(content_type.starts_with("multipart/form-data; boundary="));
+        let boundary = content_type
+            .strip_prefix("multipart/form-data; boundary=")
+            .unwrap();
+
+        let body = std::str::from_utf8(request.body.as_bytes()).unwrap();
+        assert!(body.contains(&format!("--{boundary}\r\n")));
+        assert!(body.contains("Content-Disposition: form-data; name=\"field\"\r\n\r\nhello"));
+        assert!(body.ends_with(&format!("--{boundary}--\r\n")));
+    }
+
+    #[test]
+    fn resolve_reads_a_multipart_file_part_relative_to_base_dir() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("avatar.png"), b"pngbytes").unwrap();
+
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "POST"
+            url = "https://x.test"
+
+            [request.body]
+            type = "multipart"
+
+            [[request.body.parts]]
+            type = "file"
+            name = "avatar"
+            path = "avatar.png"
+            content_type = "image/png"
+            "#,
+        )
+        .unwrap();
+        let request = file
+            .to_unresolved()
+            .resolve(&resolver(&[]), dir.path())
+            .unwrap();
+
+        let body = String::from_utf8_lossy(request.body.as_bytes()).into_owned();
+        assert!(body.contains(
+            "Content-Disposition: form-data; name=\"avatar\"; filename=\"avatar.png\"\r\n"
+        ));
+        assert!(body.contains("Content-Type: image/png\r\n"));
+        assert!(body.contains("pngbytes"));
+    }
+
+    #[test]
+    fn resolve_errors_when_a_multipart_file_part_is_missing() {
+        let dir = tempdir().unwrap();
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "POST"
+            url = "https://x.test"
+
+            [request.body]
+            type = "multipart"
+
+            [[request.body.parts]]
+            type = "file"
+            name = "avatar"
+            path = "missing.png"
+            "#,
+        )
+        .unwrap();
+        let result = file.to_unresolved().resolve(&resolver(&[]), dir.path());
+        assert!(matches!(result, Err(FormatError::Io { .. })));
+    }
+
+    #[test]
+    fn resolve_skips_a_disabled_multipart_part() {
+        let file = RequestFile::from_toml_str(
+            r#"
+            [request]
+            name = "n"
+            method = "POST"
+            url = "https://x.test"
+
+            [request.body]
+            type = "multipart"
+
+            [[request.body.parts]]
+            type = "text"
+            name = "field"
+            value = "value"
+            disabled = true
+            "#,
+        )
+        .unwrap();
+        let request = file
+            .to_unresolved()
+            .resolve(&resolver(&[]), Path::new("."))
+            .unwrap();
+
+        let body = std::str::from_utf8(request.body.as_bytes()).unwrap();
+        assert!(!body.contains("field"));
     }
 
     #[test]
@@ -502,7 +909,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let result = file.to_unresolved().resolve(&resolver(&[]));
+        let result = file.to_unresolved().resolve(&resolver(&[]), Path::new("."));
         assert!(matches!(result, Err(FormatError::Interpolation(_))));
     }
 
@@ -592,6 +999,52 @@ mod tests {
         let request = Request::post("https://x.test").body(Body::Bytes(vec![0xff, 0xfe]));
         let file = RequestFile::from_request("n", &request);
         assert!(matches!(file.request.body, BodySpec::None));
+    }
+
+    #[test]
+    fn from_request_and_body_drops_a_stale_multipart_content_type_header() {
+        // Simulates the ad-hoc CLI: `into_request` already encoded the body
+        // and injected a `Content-Type: multipart/form-data; boundary=X`
+        // header before `--save` calls `from_request_and_body`. That header
+        // must not survive into the saved file, since `resolve()` always
+        // regenerates it with a fresh boundary on every run.
+        let request = Request::new(Method::Post, "https://x.test/upload")
+            .header(
+                "Content-Type",
+                "multipart/form-data; boundary=stale-boundary",
+            )
+            .header("X-Other", "kept")
+            .body(Body::Bytes(b"...".to_vec()));
+
+        let file = RequestFile::from_request_and_body(
+            "Upload",
+            &request,
+            BodySpec::Multipart { parts: Vec::new() },
+        );
+
+        assert!(!file
+            .request
+            .headers
+            .iter()
+            .any(|h| h.name.eq_ignore_ascii_case("content-type")));
+        assert_eq!(file.request.headers[0].name, "X-Other");
+    }
+
+    #[test]
+    fn from_request_and_body_keeps_content_type_for_a_non_multipart_body() {
+        let request = Request::new(Method::Post, "https://x.test")
+            .header("Content-Type", "application/json")
+            .body(Body::Bytes(b"{}".to_vec()));
+
+        let file = RequestFile::from_request_and_body(
+            "n",
+            &request,
+            BodySpec::Text {
+                content: "{}".to_string(),
+            },
+        );
+
+        assert_eq!(file.request.headers[0].name, "Content-Type");
     }
 
     #[test]

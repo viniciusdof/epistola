@@ -14,6 +14,8 @@ pub struct CollectionManifest {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub variables: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "ClientSpec::is_default")]
+    pub client: ClientSpec,
 }
 
 impl CollectionManifest {
@@ -32,8 +34,29 @@ impl CollectionManifest {
             name: name.to_string(),
             description: description.map(str::to_string),
             variables: BTreeMap::new(),
+            client: ClientSpec::default(),
         };
         write_toml_file(path, &manifest)
+    }
+}
+
+/// `[client]` in `epistola.toml` — collection-wide defaults for request
+/// execution behavior. All fields are optional; a CLI flag overrides the
+/// matching field (see `epistola-cli`'s `ClientArgs::resolve`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ClientSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+    /// Max redirects to follow; `Some(0)` disables following redirects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_redirects: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
+}
+
+impl ClientSpec {
+    fn is_default(&self) -> bool {
+        *self == ClientSpec::default()
     }
 }
 
@@ -53,6 +76,25 @@ mod tests {
         let manifest = CollectionManifest::load(&path).unwrap();
         assert_eq!(manifest.name, "My collection");
         assert!(manifest.variables.is_empty());
+        assert_eq!(manifest.client, ClientSpec::default());
+    }
+
+    #[test]
+    fn parses_a_client_table() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("epistola.toml");
+        std::fs::write(
+            &path,
+            "name = \"n\"\n\n[client]\ntimeout_secs = 30\nmax_redirects = 0\nproxy = \"http://proxy.local:8080\"\n",
+        )
+        .unwrap();
+        let manifest = CollectionManifest::load(&path).unwrap();
+        assert_eq!(manifest.client.timeout_secs, Some(30));
+        assert_eq!(manifest.client.max_redirects, Some(0));
+        assert_eq!(
+            manifest.client.proxy.as_deref(),
+            Some("http://proxy.local:8080")
+        );
     }
 
     #[test]

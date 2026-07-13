@@ -195,7 +195,11 @@ fn show(args: ShowArgs) -> Result<()> {
     let mut resolver = collection.resolver_for_environment(args.env.as_deref())?;
     let unresolved = file.to_unresolved();
     resolver = resolver.layer(unresolved.variables.clone());
-    let request = unresolved.resolve(&resolver)?;
+    let base_dir = args
+        .path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let request = unresolved.resolve(&resolver, base_dir)?;
 
     if args.json {
         println!(
