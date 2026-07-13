@@ -30,6 +30,10 @@ pub struct FolderManifest {
 }
 
 impl FolderManifest {
+    pub fn from_toml_str(input: &str) -> Result<Self, FormatError> {
+        Ok(toml::from_str(input)?)
+    }
+
     pub fn load(path: &Path) -> Result<Self, FormatError> {
         read_toml_file(path)
     }
@@ -80,6 +84,19 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn from_toml_str_parses_the_same_shape_as_load() {
+        let manifest =
+            FolderManifest::from_toml_str("[[headers]]\nname = \"X-Api-Version\"\nvalue = \"1\"\n")
+                .unwrap();
+        assert_eq!(manifest.headers[0].name, "X-Api-Version");
+    }
+
+    #[test]
+    fn from_toml_str_rejects_invalid_toml() {
+        assert!(FolderManifest::from_toml_str("not valid [ toml").is_err());
+    }
 
     #[test]
     fn create_writes_a_loadable_empty_manifest() {

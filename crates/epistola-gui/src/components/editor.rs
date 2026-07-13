@@ -1,11 +1,13 @@
 use std::path::{Path, PathBuf};
 
 use epistola_format::{FolderManifest, RequestFile};
-use gpui::{div, prelude::*, px, IntoElement, SharedString};
+use gpui::{div, prelude::*, px, Context, FocusHandle, IntoElement, MouseButton, SharedString};
 
+use crate::components::editor_text::EditorTextElement;
 use crate::components::kit::{icon, IconName, MethodTag, PathClickHandler};
 use crate::components::tab_strip::{self, TabStripCallbacks};
 use crate::execution;
+use crate::root::EpistolaGui;
 use crate::state::{ActiveFile, ActivityResult, AppState};
 use crate::theme::Theme;
 
@@ -15,7 +17,7 @@ pub struct EditorCallbacks {
 }
 
 #[derive(Clone, Copy)]
-enum TokenKind {
+pub(crate) enum TokenKind {
     Key,
     Punct,
     String,
@@ -27,7 +29,7 @@ enum TokenKind {
 }
 
 impl TokenKind {
-    fn color(self, theme: Theme) -> gpui::Hsla {
+    pub(crate) fn color(self, theme: Theme) -> gpui::Hsla {
         match self {
             TokenKind::Key => theme.text,
             TokenKind::Punct => theme.text_muted,
@@ -107,7 +109,7 @@ fn tokenize_value(value: &str, spans: &mut Vec<(TokenKind, String)>) {
     }
 }
 
-fn tokenize_line(line: &str) -> Vec<(TokenKind, String)> {
+pub(crate) fn tokenize_line(line: &str) -> Vec<(TokenKind, String)> {
     let indent_len = line.len() - line.trim_start().len();
     let mut spans = Vec::new();
     if indent_len > 0 {
@@ -395,50 +397,110 @@ fn render_preview_row(
         )
 }
 
+fn render_save_error(message: &str, theme: Theme) -> impl IntoElement {
+    div()
+        .flex_none()
+        .px(px(16.))
+        .py(px(6.))
+        .border_b_1()
+        .border_color(theme.border)
+        .bg(theme.method_delete.opacity(0.12))
+        .text_size(px(11.5))
+        .text_color(theme.method_delete)
+        .child(format!("Not saved: {message}"))
+}
+
 pub fn render_editor(
     state: &AppState,
     theme: Theme,
     callbacks: EditorCallbacks,
+    focus_handle: FocusHandle,
+    cx: &mut Context<EpistolaGui>,
 ) -> impl IntoElement {
-    let content = load_content(state);
+    let buffer = state.active_buffer();
 
     let mut body = div()
         .id("editor-code-view")
         .flex_1()
         .overflow_y_scroll()
+        .overflow_x_scroll()
         .font_family("monospace")
         .text_size(px(13.))
         .py(px(10.));
 
-    body = match content {
-        EditorContent::Empty(message) => body.child(
-            div()
-                .px(px(16.))
-                .py(px(20.))
-                .text_color(theme.text_faint)
-                .child(message),
-        ),
-        EditorContent::Lines {
-            virtual_note,
-            lines,
-        } => {
-            let mut rows: Vec<gpui::AnyElement> = Vec::new();
-            for (i, line) in lines.iter().enumerate() {
-                rows.push(render_line(i + 1, line, theme).into_any_element());
-                if i == 1 {
-                    if let Some(note) = &virtual_note {
-                        rows.push(render_virtual_line(note, theme).into_any_element());
+    body = match buffer {
+        Some(_) => {
+            let text_element = EditorTextElement {
+                gui: cx.entity(),
+                theme,
+                focus_handle: focus_handle.clone(),
+            };
+            body.key_context("Editor")
+                .track_focus(&focus_handle)
+                .on_action(cx.listener(EpistolaGui::backspace))
+                .on_action(cx.listener(EpistolaGui::delete))
+                .on_action(cx.listener(EpistolaGui::insert_newline))
+                .on_action(cx.listener(EpistolaGui::move_left))
+                .on_action(cx.listener(EpistolaGui::move_right))
+                .on_action(cx.listener(EpistolaGui::move_up))
+                .on_action(cx.listener(EpistolaGui::move_down))
+                .on_action(cx.listener(EpistolaGui::select_left))
+                .on_action(cx.listener(EpistolaGui::select_right))
+                .on_action(cx.listener(EpistolaGui::select_up))
+                .on_action(cx.listener(EpistolaGui::select_down))
+                .on_action(cx.listener(EpistolaGui::select_all))
+                .on_action(cx.listener(EpistolaGui::home))
+                .on_action(cx.listener(EpistolaGui::end))
+                .on_action(cx.listener(EpistolaGui::paste))
+                .on_action(cx.listener(EpistolaGui::cut))
+                .on_action(cx.listener(EpistolaGui::copy))
+                .on_action(cx.listener(EpistolaGui::save))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(EpistolaGui::on_editor_mouse_down),
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(EpistolaGui::on_editor_mouse_up),
+                )
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(EpistolaGui::on_editor_mouse_up),
+                )
+                .on_mouse_move(cx.listener(EpistolaGui::on_editor_mouse_move))
+                .child(text_element)
+        }
+        None => match load_content(state) {
+            EditorContent::Empty(message) => body.child(
+                div()
+                    .px(px(16.))
+                    .py(px(20.))
+                    .text_color(theme.text_faint)
+                    .child(message),
+            ),
+            EditorContent::Lines {
+                virtual_note,
+                lines,
+            } => {
+                let mut rows: Vec<gpui::AnyElement> = Vec::new();
+                for (i, line) in lines.iter().enumerate() {
+                    rows.push(render_line(i + 1, line, theme).into_any_element());
+                    if i == 1 {
+                        if let Some(note) = &virtual_note {
+                            rows.push(render_virtual_line(note, theme).into_any_element());
+                        }
                     }
                 }
+                body.children(rows)
             }
-            body.children(rows)
-        }
+        },
     };
 
     let active_request_path: Option<PathBuf> = match &state.active_file {
         ActiveFile::Request(path) => Some(path.clone()),
         _ => None,
     };
+    let save_error = buffer.and_then(|buffer| buffer.save_error.clone());
 
     div()
         .flex()
@@ -452,6 +514,9 @@ pub fn render_editor(
         ))
         .when_some(active_request_path, |el, path| {
             el.child(render_preview_row(state, theme, &path, &callbacks.on_run))
+        })
+        .when_some(save_error, |el, message| {
+            el.child(render_save_error(&message, theme))
         })
         .child(body)
 }

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::buffer::EditorBuffer;
 use crate::collection::{self, CollectionTree, RequestEntry};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -24,12 +25,21 @@ impl ActiveFile {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Overlay {
     CommandPalette,
     QuickOpen,
     EnvironmentPicker,
     History,
+    ConfirmDiscard(ConfirmDiscardKind),
+}
+
+/// `CloseTab` offers Save (one unambiguous file); `SwitchCollection` only
+/// offers Discard (possibly many dirty tabs, no single file to save).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ConfirmDiscardKind {
+    CloseTab(ActiveFile),
+    SwitchCollection(PathBuf),
 }
 
 #[derive(Clone, Debug)]
@@ -74,6 +84,7 @@ pub struct AppState {
     pub response_subtab: ResponseSubTab,
     pub collection_action_error: Option<String>,
     pub recent_collections: Vec<PathBuf>,
+    pub editor_buffers: HashMap<ActiveFile, EditorBuffer>,
 }
 
 impl AppState {
@@ -90,6 +101,7 @@ impl AppState {
             response_subtab: ResponseSubTab::default(),
             collection_action_error: None,
             recent_collections: Vec::new(),
+            editor_buffers: HashMap::new(),
         };
         state.open_collection_at(cwd);
         state.view = View::Home;
@@ -123,12 +135,44 @@ impl AppState {
         self.response_subtab = ResponseSubTab::default();
         self.collection_action_error = None;
         self.recent_collections = epistola_engine::recent::list().unwrap_or_default();
+        self.editor_buffers.clear();
+        let active = self.active_file.clone();
+        self.ensure_buffer(&active);
+    }
+
+    fn load_buffer_text(&self, file: &ActiveFile) -> Option<String> {
+        match file {
+            ActiveFile::Request(path) => std::fs::read_to_string(path).ok(),
+            ActiveFile::Folder(dir) => std::fs::read_to_string(dir.join("folder.toml")).ok(),
+            ActiveFile::Environment(name) => {
+                let collection = self.collection.as_ref().ok()?;
+                std::fs::read_to_string(
+                    collection
+                        .root
+                        .join("environments")
+                        .join(format!("{name}.toml")),
+                )
+                .ok()
+            }
+            ActiveFile::Config | ActiveFile::None => None,
+        }
+    }
+
+    fn ensure_buffer(&mut self, file: &ActiveFile) {
+        if self.editor_buffers.contains_key(file) {
+            return;
+        }
+        if let Some(text) = self.load_buffer_text(file) {
+            self.editor_buffers
+                .insert(file.clone(), EditorBuffer::new(text));
+        }
     }
 
     fn open_tab(&mut self, file: ActiveFile) {
         if !self.open_tabs.contains(&file) {
             self.open_tabs.push(file.clone());
         }
+        self.ensure_buffer(&file);
         self.active_file = file;
         self.view = View::Workspace;
         self.overlay = None;
@@ -156,6 +200,7 @@ impl AppState {
         };
         self.open_tabs.remove(idx);
         self.activity.remove(file);
+        self.editor_buffers.remove(file);
         if &self.active_file == file {
             self.active_file = self
                 .open_tabs
@@ -186,6 +231,24 @@ impl AppState {
         self.activity
             .get(&self.active_file)
             .unwrap_or(&ActivityResult::Idle)
+    }
+
+    pub fn active_buffer(&self) -> Option<&EditorBuffer> {
+        self.editor_buffers.get(&self.active_file)
+    }
+
+    pub fn active_buffer_mut(&mut self) -> Option<&mut EditorBuffer> {
+        self.editor_buffers.get_mut(&self.active_file)
+    }
+
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.editor_buffers.values().any(EditorBuffer::is_dirty)
+    }
+
+    pub fn is_dirty(&self, file: &ActiveFile) -> bool {
+        self.editor_buffers
+            .get(file)
+            .is_some_and(EditorBuffer::is_dirty)
     }
 
     /// A no-op if the collection failed to load or defines no environments.

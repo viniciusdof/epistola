@@ -29,3 +29,4 @@ pub use request_file::{
     encode_multipart, generate_boundary, ApiKeyLocation, AuthSpec, BodySpec, FormField,
     HeaderEntry, MultipartPart, QueryEntry, RequestFile, RequestSpec, UnresolvedRequest,
 };
+pub use variables_file::validate_variables_toml;

@@ -106,6 +106,16 @@ pub fn render_tab_strip(
                         .text_ellipsis()
                         .child(tab_text(state, file)),
                 )
+                .when(state.is_dirty(file), |el| {
+                    el.child(
+                        div()
+                            .flex_none()
+                            .w(px(6.))
+                            .h(px(6.))
+                            .rounded(px(3.))
+                            .bg(theme.accent),
+                    )
+                })
                 .child(
                     div()
                         .id(SharedString::from(format!("tab-close-{file:?}")))

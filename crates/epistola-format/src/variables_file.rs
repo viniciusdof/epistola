@@ -29,6 +29,13 @@ pub(crate) fn load_with_secrets_sidecar(
     Ok(variables)
 }
 
+/// Confirms `input` parses as a `{ variables = { ... } }`-shaped TOML table
+/// without persisting anything.
+pub fn validate_variables_toml(input: &str) -> Result<(), FormatError> {
+    toml::from_str::<VariablesFile>(input)?;
+    Ok(())
+}
+
 /// Sets `key` in `path`'s `[variables]` table and writes it back. Loses
 /// hand-written comments on round-trip (known limitation); `BTreeMap` keeps
 /// key order stable so unrelated keys don't shuffle in the diff.
@@ -49,6 +56,16 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn validate_variables_toml_accepts_a_variables_table() {
+        assert!(validate_variables_toml("[variables]\nbase_url = \"https://dev.test\"\n").is_ok());
+    }
+
+    #[test]
+    fn validate_variables_toml_rejects_invalid_toml() {
+        assert!(validate_variables_toml("not valid [ toml").is_err());
+    }
 
     #[test]
     fn upsert_creates_the_file_when_missing() {

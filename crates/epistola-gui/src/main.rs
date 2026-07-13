@@ -1,7 +1,11 @@
 mod actions;
 mod assets;
+mod buffer;
 mod collection;
 mod components;
+mod editor_actions;
+mod editor_input;
+mod editor_save;
 mod execution;
 mod root;
 mod state;
@@ -10,9 +14,14 @@ mod theme;
 use std::env;
 
 use gpui::{
-    point, prelude::*, px, size, App, Bounds, TitlebarOptions, WindowBounds, WindowOptions,
+    point, prelude::*, px, size, App, Bounds, KeyBinding, TitlebarOptions, WindowBounds,
+    WindowOptions,
 };
 
+use actions::{
+    Backspace, Copy, Cut, Delete, End, Home, InsertNewline, MoveDown, MoveLeft, MoveRight, MoveUp,
+    Paste, Save, SelectAll, SelectDown, SelectLeft, SelectRight, SelectUp,
+};
 use assets::Assets;
 use root::EpistolaGui;
 
@@ -30,6 +39,27 @@ fn main() {
     gpui_platform::application()
         .with_assets(Assets)
         .run(move |cx: &mut App| {
+            cx.bind_keys([
+                KeyBinding::new("backspace", Backspace, Some("Editor")),
+                KeyBinding::new("delete", Delete, Some("Editor")),
+                KeyBinding::new("enter", InsertNewline, Some("Editor")),
+                KeyBinding::new("left", MoveLeft, Some("Editor")),
+                KeyBinding::new("right", MoveRight, Some("Editor")),
+                KeyBinding::new("up", MoveUp, Some("Editor")),
+                KeyBinding::new("down", MoveDown, Some("Editor")),
+                KeyBinding::new("shift-left", SelectLeft, Some("Editor")),
+                KeyBinding::new("shift-right", SelectRight, Some("Editor")),
+                KeyBinding::new("shift-up", SelectUp, Some("Editor")),
+                KeyBinding::new("shift-down", SelectDown, Some("Editor")),
+                KeyBinding::new("cmd-a", SelectAll, Some("Editor")),
+                KeyBinding::new("home", Home, Some("Editor")),
+                KeyBinding::new("end", End, Some("Editor")),
+                KeyBinding::new("cmd-v", Paste, Some("Editor")),
+                KeyBinding::new("cmd-c", Copy, Some("Editor")),
+                KeyBinding::new("cmd-x", Cut, Some("Editor")),
+                KeyBinding::new("cmd-s", Save, Some("Editor")),
+            ]);
+
             let bounds = Bounds::centered(None, size(px(1080.0), px(700.0)), cx);
             let window = cx.open_window(
                 WindowOptions {
@@ -41,7 +71,7 @@ fn main() {
                     }),
                     ..Default::default()
                 },
-                |_, cx| cx.new(|_| EpistolaGui::new(cwd.clone())),
+                |_, cx| cx.new(|cx| EpistolaGui::new(cwd.clone(), cx)),
             );
 
             match window {

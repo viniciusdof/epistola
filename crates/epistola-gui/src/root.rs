@@ -6,9 +6,12 @@ use std::rc::Rc;
 
 use epistola_core::{Body, Request};
 use gpui::{
-    div, prelude::*, px, App, ClickEvent, Context, IntoElement, Render, WeakEntity, Window,
+    div, prelude::*, px, App, ClickEvent, Context, FocusHandle, Focusable, IntoElement, Render,
+    WeakEntity, Window,
 };
 
+use crate::components::confirm_discard::{self, ClickHandler};
+use crate::components::editor_text::EditorLayout;
 use crate::components::env_popover;
 use crate::components::history_modal;
 use crate::components::kit::MethodTag;
@@ -19,21 +22,36 @@ use crate::components::titlebar::TitlebarCallbacks;
 use crate::components::{
     activity_rail, editor, home, response_drawer, sidebar, statusbar, titlebar,
 };
+use crate::editor_save;
 use crate::execution;
-use crate::state::{ActiveFile, ActivityResult, AppState, Overlay, ResponseSubTab, View};
+use crate::state::{
+    ActiveFile, ActivityResult, AppState, ConfirmDiscardKind, Overlay, ResponseSubTab, View,
+};
 use crate::theme::Theme;
 
 pub struct EpistolaGui {
     pub(crate) state: AppState,
     theme: Theme,
+    pub(crate) editor_focus_handle: FocusHandle,
+    pub(crate) editor_layout: Option<EditorLayout>,
+    pub(crate) editor_mouse_selecting: bool,
 }
 
 impl EpistolaGui {
-    pub fn new(cwd: PathBuf) -> Self {
+    pub fn new(cwd: PathBuf, cx: &mut Context<Self>) -> Self {
         Self {
             state: AppState::new(cwd),
             theme: Theme::dark(),
+            editor_focus_handle: cx.focus_handle(),
+            editor_layout: None,
+            editor_mouse_selecting: false,
         }
+    }
+}
+
+impl Focusable for EpistolaGui {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.editor_focus_handle.clone()
     }
 }
 
@@ -295,7 +313,13 @@ impl Render for EpistolaGui {
                 let weak = weak.clone();
                 Rc::new(move |path: PathBuf, _window: &mut Window, cx: &mut App| {
                     let _ = weak.update(cx, |this, cx| {
-                        this.state.open_collection_at(path);
+                        if this.state.has_unsaved_changes() {
+                            this.state.overlay = Some(Overlay::ConfirmDiscard(
+                                ConfirmDiscardKind::SwitchCollection(path),
+                            ));
+                        } else {
+                            this.state.open_collection_at(path);
+                        }
                         cx.notify();
                     });
                 })
@@ -326,7 +350,13 @@ impl Render for EpistolaGui {
                     Rc::new(
                         move |file: ActiveFile, _window: &mut Window, cx: &mut App| {
                             let _ = weak.update(cx, |this, cx| {
-                                this.state.close_tab(&file);
+                                if this.state.is_dirty(&file) {
+                                    this.state.overlay = Some(Overlay::ConfirmDiscard(
+                                        ConfirmDiscardKind::CloseTab(file),
+                                    ));
+                                } else {
+                                    this.state.close_tab(&file);
+                                }
                                 cx.notify();
                             });
                         },
@@ -359,7 +389,13 @@ impl Render for EpistolaGui {
                     theme,
                     sidebar_callbacks,
                 ))
-                .child(editor::render_editor(&self.state, theme, editor_callbacks))
+                .child(editor::render_editor(
+                    &self.state,
+                    theme,
+                    editor_callbacks,
+                    self.editor_focus_handle.clone(),
+                    cx,
+                ))
                 .into_any_element(),
         };
 
@@ -408,7 +444,7 @@ impl Render for EpistolaGui {
                 ))
             })
             .child(statusbar::render_statusbar(&self.state, theme))
-            .when_some(self.state.overlay, |el, overlay| match overlay {
+            .when_some(self.state.overlay.clone(), |el, overlay| match overlay {
                 Overlay::CommandPalette => {
                     let items = command_palette_items(weak.clone(), &self.state);
                     let on_dismiss = cx.listener(|this, _: &ClickEvent, _window, cx| {
@@ -482,6 +518,69 @@ impl Render for EpistolaGui {
                     });
                     el.child(history_modal::render_history_modal(
                         &entries, theme, on_dismiss,
+                    ))
+                }
+                Overlay::ConfirmDiscard(kind) => {
+                    let (message, save_target): (String, Option<ActiveFile>) = match &kind {
+                        ConfirmDiscardKind::CloseTab(file) => (
+                            "This tab has unsaved changes. Save before closing?".to_string(),
+                            Some(file.clone()),
+                        ),
+                        ConfirmDiscardKind::SwitchCollection(_) => (
+                            "This collection has unsaved changes in one or more tabs. \
+                             Discard them and switch anyway?"
+                                .to_string(),
+                            None,
+                        ),
+                    };
+                    let on_save: Option<ClickHandler> = save_target.map(|file| {
+                        let weak = weak.clone();
+                        Rc::new(
+                            move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    editor_save::validate_and_save(&mut this.state, &file);
+                                    if !this.state.is_dirty(&file) {
+                                        this.state.close_tab(&file);
+                                        this.state.overlay = None;
+                                    }
+                                    cx.notify();
+                                });
+                            },
+                        ) as ClickHandler
+                    });
+                    let on_discard = {
+                        let weak = weak.clone();
+                        let kind = kind.clone();
+                        Rc::new(
+                            move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    match &kind {
+                                        ConfirmDiscardKind::CloseTab(file) => {
+                                            this.state.close_tab(file)
+                                        }
+                                        ConfirmDiscardKind::SwitchCollection(path) => {
+                                            this.state.open_collection_at(path.clone())
+                                        }
+                                    }
+                                    this.state.overlay = None;
+                                    cx.notify();
+                                });
+                            },
+                        )
+                    };
+                    let on_cancel: ClickHandler = {
+                        let weak = weak.clone();
+                        Rc::new(
+                            move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.state.overlay = None;
+                                    cx.notify();
+                                });
+                            },
+                        )
+                    };
+                    el.child(confirm_discard::render_confirm_discard(
+                        &message, on_save, on_discard, on_cancel, theme,
                     ))
                 }
             })

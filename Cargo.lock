@@ -1697,8 +1697,10 @@ dependencies = [
  "gpui_platform",
  "rust-embed",
  "serde_json",
+ "tempfile",
  "time",
  "tokio",
+ "unicode-segmentation",
 ]
 
 [[package]]
