@@ -1,6 +1,6 @@
-use gpui::{div, prelude::*, px, App, ClickEvent, IntoElement, SharedString, Window};
+use gpui::{div, prelude::*, px, IntoElement, SharedString};
 
-use crate::components::kit::{dot_pill, TitlebarButton};
+use crate::components::kit::{dot_pill, ClickHandler, TitlebarButton};
 use crate::state::{ActiveFile, AppState, View};
 use crate::theme::Theme;
 
@@ -13,6 +13,28 @@ fn breadcrumb(state: &AppState) -> Vec<SharedString> {
                 Err(_) => vec!["No collection".into()],
             },
             ActiveFile::Config => vec!["user".into(), "config.toml".into()],
+            ActiveFile::Folder(dir) => {
+                let name = dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                match &state.collection {
+                    Ok(collection) => vec![
+                        collection.name.clone().into(),
+                        name.into(),
+                        "folder.toml".into(),
+                    ],
+                    Err(_) => vec!["…".into()],
+                }
+            }
+            ActiveFile::Environment(name) => match &state.collection {
+                Ok(collection) => vec![
+                    collection.name.clone().into(),
+                    "environments".into(),
+                    format!("{name}.toml").into(),
+                ],
+                Err(_) => vec!["…".into()],
+            },
             ActiveFile::Request(_) => match (&state.collection, state.active_request()) {
                 (Ok(collection), Some(request)) => {
                     let mut segments = vec![collection.name.clone().into()];
@@ -57,31 +79,34 @@ fn render_breadcrumb(state: &AppState, theme: Theme) -> impl IntoElement {
     div().flex().items_center().children(parts)
 }
 
-pub struct TitlebarCallbacks<QO, CP>
-where
-    QO: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    CP: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-{
-    pub on_quick_open: QO,
-    pub on_command_palette: CP,
+pub struct TitlebarCallbacks {
+    pub on_quick_open: ClickHandler,
+    pub on_command_palette: ClickHandler,
+    pub on_open_env_picker: ClickHandler,
 }
 
-pub fn render_titlebar<QO, CP>(
+pub fn render_titlebar(
     state: &AppState,
     theme: Theme,
-    callbacks: TitlebarCallbacks<QO, CP>,
-) -> impl IntoElement
-where
-    QO: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    CP: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-{
+    callbacks: TitlebarCallbacks,
+) -> impl IntoElement {
+    let env_pill = match &state.environment {
+        Some(name) => dot_pill(SharedString::from(name.clone()), theme.success, theme),
+        None => dot_pill(
+            SharedString::from("no environment"),
+            theme.text_faint,
+            theme,
+        ),
+    };
+
     div()
         .flex()
         .flex_none()
         .items_center()
         .gap(px(10.))
         .h(px(40.))
-        .px(px(14.))
+        .pl(px(78.))
+        .pr(px(14.))
         .border_b_1()
         .border_color(theme.border)
         .text_size(px(12.5))
@@ -97,14 +122,13 @@ where
         )
         .child(render_breadcrumb(state, theme))
         .child(div().flex_1())
-        .child(match &state.environment {
-            Some(name) => dot_pill(SharedString::from(name.clone()), theme.success, theme),
-            None => dot_pill(
-                SharedString::from("no environment"),
-                theme.text_faint,
-                theme,
-            ),
-        })
+        .child(
+            div()
+                .id("env-pill")
+                .cursor_pointer()
+                .on_click(callbacks.on_open_env_picker)
+                .child(env_pill),
+        )
         .child(TitlebarButton::new("Quick Open", "⌘P", theme).on_click(callbacks.on_quick_open))
         .child(TitlebarButton::new("Commands", "⌘K", theme).on_click(callbacks.on_command_palette))
 }

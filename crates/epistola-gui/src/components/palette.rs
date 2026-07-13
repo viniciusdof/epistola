@@ -85,6 +85,7 @@ pub fn render_palette_overlay(
         .inset_0()
         .flex()
         .justify_center()
+        .items_start()
         .pt(px(96.))
         .bg(gpui::black().opacity(0.55))
         .on_click(on_dismiss)

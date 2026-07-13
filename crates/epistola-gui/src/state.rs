@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::collection::{self, CollectionTree, RequestEntry};
@@ -8,11 +9,13 @@ pub enum View {
     Workspace,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ActiveFile {
     None,
     Request(PathBuf),
     Config,
+    Folder(PathBuf),
+    Environment(String),
 }
 
 impl ActiveFile {
@@ -25,6 +28,8 @@ impl ActiveFile {
 pub enum Overlay {
     CommandPalette,
     QuickOpen,
+    EnvironmentPicker,
+    History,
 }
 
 #[derive(Clone, Debug)]
@@ -36,22 +41,37 @@ pub enum ActivityResult {
         duration_ms: u128,
         content_length: usize,
         body: String,
+        headers: Vec<(String, String)>,
     },
     RunFailed(String),
+    UnresolvedVariable {
+        variable: String,
+    },
     Resolved(String),
     ResolvedFailed(String),
     Linted(String),
     LintFailed(String),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ResponseSubTab {
+    #[default]
+    Body,
+    Headers,
+    Raw,
+}
+
 pub struct AppState {
     pub cwd: PathBuf,
     pub view: View,
     pub active_file: ActiveFile,
+    pub open_tabs: Vec<ActiveFile>,
     pub environment: Option<String>,
     pub collection: Result<CollectionTree, String>,
     pub overlay: Option<Overlay>,
-    pub activity: ActivityResult,
+
+    pub activity: HashMap<ActiveFile, ActivityResult>,
+    pub response_subtab: ResponseSubTab,
     pub collection_action_error: Option<String>,
     pub recent_collections: Vec<PathBuf>,
 }
@@ -62,10 +82,12 @@ impl AppState {
             cwd: PathBuf::new(),
             view: View::Workspace,
             active_file: ActiveFile::None,
+            open_tabs: Vec::new(),
             environment: None,
             collection: Err(String::new()),
             overlay: None,
-            activity: ActivityResult::Idle,
+            activity: HashMap::new(),
+            response_subtab: ResponseSubTab::default(),
             collection_action_error: None,
             recent_collections: Vec::new(),
         };
@@ -86,6 +108,10 @@ impl AppState {
             .and_then(|c| c.all_requests().into_iter().next())
             .map(|r| ActiveFile::Request(r.abs_path.clone()))
             .unwrap_or(ActiveFile::None);
+        self.open_tabs = match &self.active_file {
+            ActiveFile::None => Vec::new(),
+            file => vec![file.clone()],
+        };
         if collection.is_ok() {
             let _ = epistola_engine::recent::record(&cwd);
         }
@@ -93,22 +119,56 @@ impl AppState {
         self.collection = collection;
         self.view = View::Workspace;
         self.overlay = None;
-        self.activity = ActivityResult::Idle;
+        self.activity.clear();
+        self.response_subtab = ResponseSubTab::default();
         self.collection_action_error = None;
         self.recent_collections = epistola_engine::recent::list().unwrap_or_default();
     }
 
-    pub fn open_request(&mut self, path: PathBuf) {
-        self.active_file = ActiveFile::Request(path);
+    fn open_tab(&mut self, file: ActiveFile) {
+        if !self.open_tabs.contains(&file) {
+            self.open_tabs.push(file.clone());
+        }
+        self.active_file = file;
         self.view = View::Workspace;
         self.overlay = None;
-        self.activity = ActivityResult::Idle;
+    }
+
+    pub fn open_request(&mut self, path: PathBuf) {
+        self.open_tab(ActiveFile::Request(path));
     }
 
     pub fn open_config(&mut self) {
-        self.active_file = ActiveFile::Config;
-        self.view = View::Workspace;
-        self.overlay = None;
+        self.open_tab(ActiveFile::Config);
+    }
+
+    pub fn open_folder_doc(&mut self, folder_dir: PathBuf) {
+        self.open_tab(ActiveFile::Folder(folder_dir));
+    }
+
+    pub fn open_environment_doc(&mut self, name: String) {
+        self.open_tab(ActiveFile::Environment(name));
+    }
+
+    pub fn close_tab(&mut self, file: &ActiveFile) {
+        let Some(idx) = self.open_tabs.iter().position(|f| f == file) else {
+            return;
+        };
+        self.open_tabs.remove(idx);
+        self.activity.remove(file);
+        if &self.active_file == file {
+            self.active_file = self
+                .open_tabs
+                .get(idx.min(self.open_tabs.len().saturating_sub(1)))
+                .cloned()
+                .unwrap_or(ActiveFile::None);
+        }
+    }
+
+    pub fn switch_tab(&mut self, file: ActiveFile) {
+        if self.open_tabs.contains(&file) {
+            self.active_file = file;
+        }
     }
 
     pub fn active_request(&self) -> Option<&RequestEntry> {
@@ -120,6 +180,12 @@ impl AppState {
                 .and_then(|c| c.find_request(path)),
             _ => None,
         }
+    }
+
+    pub fn active_activity(&self) -> &ActivityResult {
+        self.activity
+            .get(&self.active_file)
+            .unwrap_or(&ActivityResult::Idle)
     }
 
     /// A no-op if the collection failed to load or defines no environments.
@@ -143,5 +209,9 @@ impl AppState {
             None => collection.environments[0].clone(),
         };
         self.environment = Some(next);
+    }
+
+    pub fn set_environment(&mut self, name: String) {
+        self.environment = Some(name);
     }
 }

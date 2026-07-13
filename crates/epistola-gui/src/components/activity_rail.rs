@@ -1,30 +1,22 @@
-use gpui::{div, prelude::*, px, App, ClickEvent, IntoElement, Window};
+use gpui::{div, prelude::*, px, IntoElement};
 
-use crate::components::kit::{IconName, RailButton};
+use crate::components::kit::{ClickHandler, IconName, RailButton};
 use crate::state::{ActiveFile, AppState, View};
 use crate::theme::Theme;
 
-pub struct RailCallbacks<H, W, S>
-where
-    H: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    W: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    S: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-{
-    pub on_home: H,
-    pub on_workspace: W,
-    pub on_settings: S,
+pub struct RailCallbacks {
+    pub on_home: ClickHandler,
+    pub on_workspace: ClickHandler,
+    pub on_environments: ClickHandler,
+    pub on_history: ClickHandler,
+    pub on_settings: ClickHandler,
 }
 
-pub fn render_activity_rail<H, W, S>(
+pub fn render_activity_rail(
     state: &AppState,
     theme: Theme,
-    callbacks: RailCallbacks<H, W, S>,
-) -> impl IntoElement
-where
-    H: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    W: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    S: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-{
+    callbacks: RailCallbacks,
+) -> impl IntoElement {
     let settings_active = state.view == View::Workspace && state.active_file == ActiveFile::Config;
     let workspace_active = state.view == View::Workspace && !settings_active;
 
@@ -48,8 +40,11 @@ where
                 .active(workspace_active)
                 .on_click(callbacks.on_workspace),
         )
-        .child(RailButton::new(IconName::Layers, "Environments", theme))
-        .child(RailButton::new(IconName::History, "History", theme))
+        .child(
+            RailButton::new(IconName::Layers, "Environments", theme)
+                .on_click(callbacks.on_environments),
+        )
+        .child(RailButton::new(IconName::History, "History", theme).on_click(callbacks.on_history))
         .child(div().flex_1())
         .child(
             RailButton::new(IconName::Settings, "Settings (⌘,)", theme)

@@ -1,7 +1,11 @@
-use gpui::{div, prelude::*, px, IntoElement};
+use std::rc::Rc;
 
-use crate::state::ActivityResult;
+use gpui::{div, prelude::*, px, App, ClickEvent, IntoElement, Window};
+
+use crate::state::{ActivityResult, ResponseSubTab};
 use crate::theme::Theme;
+
+pub type SubtabSelectHandler = Rc<dyn Fn(ResponseSubTab, &mut Window, &mut App)>;
 
 struct Chip {
     label: &'static str,
@@ -21,15 +25,45 @@ fn status_chip(chip: Chip) -> impl IntoElement {
         .child(chip.label)
 }
 
-pub fn render_response_drawer(theme: Theme, activity: &ActivityResult) -> impl IntoElement {
-    let (chip, meta, body): (Chip, Option<String>, String) = match activity {
+fn drawer_subtab(
+    label: &'static str,
+    tab: ResponseSubTab,
+    active: ResponseSubTab,
+    theme: Theme,
+    on_select: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(label)
+        .px(px(10.))
+        .py(px(4.))
+        .rounded(px(5.))
+        .cursor_pointer()
+        .when(tab == active, |el| {
+            el.bg(theme.surface_raised).text_color(theme.text)
+        })
+        .when(tab != active, |el| el.text_color(theme.text_muted))
+        .on_click(on_select)
+        .child(label)
+}
+
+pub fn render_response_drawer(
+    theme: Theme,
+    activity: &ActivityResult,
+    subtab: ResponseSubTab,
+    on_select_subtab: SubtabSelectHandler,
+) -> impl IntoElement {
+    let has_headers = matches!(activity, ActivityResult::RunSuccess { .. });
+
+    let (chip, meta, body): (Chip, Option<String>, gpui::AnyElement) = match activity {
         ActivityResult::Idle => (
             Chip {
                 label: "Idle",
                 color: theme.text_faint,
             },
             None,
-            "Not run yet — open Commands (⌘K) → Run request.".to_string(),
+            div()
+                .child("Not run yet — open Commands (⌘K) → Run request.")
+                .into_any_element(),
         ),
         ActivityResult::Running => (
             Chip {
@@ -37,13 +71,14 @@ pub fn render_response_drawer(theme: Theme, activity: &ActivityResult) -> impl I
                 color: theme.accent,
             },
             None,
-            "Sending…".to_string(),
+            div().child("Sending…").into_any_element(),
         ),
         ActivityResult::RunSuccess {
             status,
             duration_ms,
             content_length,
             body,
+            headers,
         } => {
             let color = if (200..300).contains(status) {
                 theme.success
@@ -55,10 +90,34 @@ pub fn render_response_drawer(theme: Theme, activity: &ActivityResult) -> impl I
             } else {
                 "Error"
             };
+            let content = match subtab {
+                ResponseSubTab::Body => div().child(body.clone()).into_any_element(),
+                ResponseSubTab::Headers => div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .children(headers.iter().map(|(name, value)| {
+                        div()
+                            .flex()
+                            .gap(px(8.))
+                            .child(div().text_color(theme.method_put).child(name.clone()))
+                            .child(div().text_color(theme.text).child(value.clone()))
+                    }))
+                    .into_any_element(),
+                ResponseSubTab::Raw => {
+                    let mut raw = format!("HTTP/1.1 {status}\n");
+                    for (name, value) in headers {
+                        raw.push_str(&format!("{name}: {value}\n"));
+                    }
+                    raw.push('\n');
+                    raw.push_str(body);
+                    div().child(raw).into_any_element()
+                }
+            };
             (
                 Chip { label, color },
                 Some(format!("{status} · {duration_ms} ms · {content_length} B")),
-                body.clone(),
+                content,
             )
         }
         ActivityResult::RunFailed(message) => (
@@ -67,7 +126,19 @@ pub fn render_response_drawer(theme: Theme, activity: &ActivityResult) -> impl I
                 color: theme.method_delete,
             },
             None,
-            message.clone(),
+            div().child(message.clone()).into_any_element(),
+        ),
+        ActivityResult::UnresolvedVariable { variable } => (
+            Chip {
+                label: "Unresolved",
+                color: theme.method_put,
+            },
+            None,
+            div()
+                .child(format!(
+                    "\"{variable}\" has no value in the active environment and no request.variables default.\nAdd one, or pass an override, then run again."
+                ))
+                .into_any_element(),
         ),
         ActivityResult::Resolved(text) => (
             Chip {
@@ -75,7 +146,7 @@ pub fn render_response_drawer(theme: Theme, activity: &ActivityResult) -> impl I
                 color: theme.method_put,
             },
             None,
-            text.clone(),
+            div().child(text.clone()).into_any_element(),
         ),
         ActivityResult::ResolvedFailed(message) => (
             Chip {
@@ -83,7 +154,7 @@ pub fn render_response_drawer(theme: Theme, activity: &ActivityResult) -> impl I
                 color: theme.method_delete,
             },
             None,
-            message.clone(),
+            div().child(message.clone()).into_any_element(),
         ),
         ActivityResult::Linted(text) => (
             Chip {
@@ -91,7 +162,7 @@ pub fn render_response_drawer(theme: Theme, activity: &ActivityResult) -> impl I
                 color: theme.method_put,
             },
             None,
-            text.clone(),
+            div().child(text.clone()).into_any_element(),
         ),
         ActivityResult::LintFailed(message) => (
             Chip {
@@ -99,7 +170,7 @@ pub fn render_response_drawer(theme: Theme, activity: &ActivityResult) -> impl I
                 color: theme.method_delete,
             },
             None,
-            message.clone(),
+            div().child(message.clone()).into_any_element(),
         ),
     };
 
@@ -121,23 +192,45 @@ pub fn render_response_drawer(theme: Theme, activity: &ActivityResult) -> impl I
                 .border_b_1()
                 .border_color(theme.border)
                 .text_size(px(11.5))
-                .child(
-                    div()
-                        .px(px(10.))
-                        .py(px(4.))
-                        .rounded(px(5.))
-                        .bg(theme.surface_raised)
-                        .text_color(theme.text)
-                        .child("Response"),
-                )
-                .child(
-                    div()
-                        .px(px(10.))
-                        .py(px(4.))
-                        .rounded(px(5.))
-                        .text_color(theme.text_muted)
-                        .child("Headers"),
-                )
+                .when(has_headers, |el| {
+                    let select_body = on_select_subtab.clone();
+                    let select_headers = on_select_subtab.clone();
+                    let select_raw = on_select_subtab.clone();
+                    el.child(drawer_subtab(
+                        "Body",
+                        ResponseSubTab::Body,
+                        subtab,
+                        theme,
+                        move |_event, window, cx| select_body(ResponseSubTab::Body, window, cx),
+                    ))
+                    .child(drawer_subtab(
+                        "Headers",
+                        ResponseSubTab::Headers,
+                        subtab,
+                        theme,
+                        move |_event, window, cx| {
+                            select_headers(ResponseSubTab::Headers, window, cx)
+                        },
+                    ))
+                    .child(drawer_subtab(
+                        "Raw",
+                        ResponseSubTab::Raw,
+                        subtab,
+                        theme,
+                        move |_event, window, cx| select_raw(ResponseSubTab::Raw, window, cx),
+                    ))
+                })
+                .when(!has_headers, |el| {
+                    el.child(
+                        div()
+                            .px(px(10.))
+                            .py(px(4.))
+                            .rounded(px(5.))
+                            .bg(theme.surface_raised)
+                            .text_color(theme.text)
+                            .child("Response"),
+                    )
+                })
                 .child(status_chip(chip))
                 .when_some(meta, |el, meta| {
                     el.child(

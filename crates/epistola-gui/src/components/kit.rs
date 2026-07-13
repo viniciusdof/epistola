@@ -13,6 +13,8 @@ pub type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static
 
 pub type PathClickHandler = Rc<dyn Fn(PathBuf, &mut Window, &mut App)>;
 
+pub type StringClickHandler = Rc<dyn Fn(String, &mut Window, &mut App)>;
+
 /// Lucide icons vendored under `assets/icons/`, served through
 /// `crate::assets::Assets` (an `AssetSource` impl registered on the `App`).
 #[derive(Clone, Copy)]
@@ -24,6 +26,8 @@ pub enum IconName {
     Settings,
     ChevronDown,
     Info,
+    Close,
+    Loading,
 }
 
 impl IconName {
@@ -36,6 +40,8 @@ impl IconName {
             IconName::Settings => "icons/settings.svg",
             IconName::ChevronDown => "icons/chevron-down.svg",
             IconName::Info => "icons/info.svg",
+            IconName::Close => "icons/x.svg",
+            IconName::Loading => "icons/loader-circle.svg",
         }
     }
 }

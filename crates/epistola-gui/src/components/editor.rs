@@ -1,11 +1,18 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use epistola_format::{FolderManifest, RequestFile};
 use gpui::{div, prelude::*, px, IntoElement, SharedString};
 
-use crate::components::kit::{icon, IconName, MethodTag};
-use crate::state::{ActiveFile, AppState};
+use crate::components::kit::{icon, IconName, MethodTag, PathClickHandler};
+use crate::components::tab_strip::{self, TabStripCallbacks};
+use crate::execution;
+use crate::state::{ActiveFile, ActivityResult, AppState};
 use crate::theme::Theme;
+
+pub struct EditorCallbacks {
+    pub tab_strip: TabStripCallbacks,
+    pub on_run: PathClickHandler,
+}
 
 #[derive(Clone, Copy)]
 enum TokenKind {
@@ -171,6 +178,16 @@ enum EditorContent {
     },
 }
 
+fn read_toml_lines(path: &Path) -> EditorContent {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return EditorContent::Empty(format!("Could not read {}", path.display()).into());
+    };
+    EditorContent::Lines {
+        virtual_note: None,
+        lines: raw.lines().map(str::to_string).collect(),
+    }
+}
+
 fn load_content(state: &AppState) -> EditorContent {
     match &state.active_file {
         ActiveFile::None => EditorContent::Empty("No request open — press ⌘P to open one.".into()),
@@ -207,6 +224,17 @@ fn load_content(state: &AppState) -> EditorContent {
                 lines: raw.lines().map(str::to_string).collect(),
             }
         }
+
+        ActiveFile::Folder(dir) => read_toml_lines(&dir.join("folder.toml")),
+        ActiveFile::Environment(name) => match &state.collection {
+            Ok(collection) => read_toml_lines(
+                &collection
+                    .root
+                    .join("environments")
+                    .join(format!("{name}.toml")),
+            ),
+            Err(_) => EditorContent::Empty("No collection open".into()),
+        },
     }
 }
 
@@ -252,37 +280,126 @@ fn render_virtual_line(note: &str, theme: Theme) -> impl IntoElement {
         .child(format!("inherits Authorization from {note}"))
 }
 
-fn tab_label(state: &AppState, theme: Theme) -> impl IntoElement {
-    let (glyph, name): (gpui::AnyElement, SharedString) = match &state.active_file {
-        ActiveFile::None => (div().into_any_element(), "".into()),
-        ActiveFile::Config => (
-            icon(IconName::Settings, px(13.), theme.text_muted).into_any_element(),
-            "config.toml".into(),
-        ),
-        ActiveFile::Request(path) => match state.active_request() {
-            Some(request) => (
-                MethodTag::new(request.method.clone(), theme).into_any_element(),
-                request.file_name.clone().into(),
-            ),
-            None => (div().into_any_element(), path.display().to_string().into()),
+/// What the preview row shows before a run: the request's resolved (or
+/// best-effort raw) URL, and whether resolving it hit an undefined
+/// `{{variable}}`.
+struct UrlPreview {
+    text: String,
+    unresolved_variable: Option<String>,
+}
+
+fn preview_url(state: &AppState, path: &Path) -> UrlPreview {
+    match epistola_engine::run::resolve_saved_request(
+        path,
+        state.environment.as_deref(),
+        Default::default(),
+    ) {
+        Ok((_collection, resolved)) => UrlPreview {
+            text: resolved.request.url.clone(),
+            unresolved_variable: None,
         },
-    };
+        Err(engine_err) => {
+            let raw_url = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|raw| RequestFile::from_toml_str(&raw).ok())
+                .map(|file| file.request.url)
+                .unwrap_or_default();
+            let unresolved_variable = match execution::classify_engine_error(engine_err) {
+                ActivityResult::UnresolvedVariable { variable } => Some(variable),
+                _ => None,
+            };
+            UrlPreview {
+                text: raw_url,
+                unresolved_variable,
+            }
+        }
+    }
+}
+
+fn render_preview_row(
+    state: &AppState,
+    theme: Theme,
+    path: &Path,
+    on_run: &PathClickHandler,
+) -> impl IntoElement {
+    let request = state.active_request();
+    let preview = preview_url(state, path);
+    let running = matches!(state.active_activity(), ActivityResult::Running);
+    let run_path = path.to_path_buf();
+    let on_run = on_run.clone();
+
     div()
         .flex()
+        .flex_none()
         .items_center()
-        .gap(px(7.))
+        .gap(px(10.))
+        .h(px(42.))
         .px(px(14.))
-        .py(px(8.))
-        .border_r_1()
+        .border_b_1()
         .border_color(theme.border)
         .bg(theme.surface)
         .text_size(px(12.5))
-        .text_color(theme.text)
-        .child(glyph)
-        .child(name)
+        .when_some(request, |el, request| {
+            el.child(MethodTag::new(request.method.clone(), theme))
+        })
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .text_ellipsis()
+                .font_family("monospace")
+                .text_color(theme.text_muted)
+                .child(preview.text),
+        )
+        .when_some(preview.unresolved_variable, |el, variable| {
+            el.child(
+                div()
+                    .flex_none()
+                    .text_size(px(9.5))
+                    .font_family("monospace")
+                    .text_color(theme.method_put)
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(px(4.))
+                    .px(px(6.))
+                    .py(px(2.))
+                    .child(format!("{{{{{variable}}}}} unresolved")),
+            )
+        })
+        .child(
+            div()
+                .id("editor-run-button")
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(6.))
+                .h(px(27.))
+                .px(px(12.))
+                .rounded(px(6.))
+                .bg(if running {
+                    theme.text_faint
+                } else {
+                    theme.accent
+                })
+                .text_color(theme.accent_ink)
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .when(!running, |el| {
+                    el.cursor_pointer()
+                        .on_click(move |_event, window, cx| on_run(run_path.clone(), window, cx))
+                })
+                .when(running, |el| {
+                    el.child(icon(IconName::Loading, px(11.), theme.accent_ink))
+                })
+                .child(if running { "Running" } else { "Run" }),
+        )
 }
 
-pub fn render_editor(state: &AppState, theme: Theme) -> impl IntoElement {
+pub fn render_editor(
+    state: &AppState,
+    theme: Theme,
+    callbacks: EditorCallbacks,
+) -> impl IntoElement {
     let content = load_content(state);
 
     let mut body = div()
@@ -318,18 +435,23 @@ pub fn render_editor(state: &AppState, theme: Theme) -> impl IntoElement {
         }
     };
 
+    let active_request_path: Option<PathBuf> = match &state.active_file {
+        ActiveFile::Request(path) => Some(path.clone()),
+        _ => None,
+    };
+
     div()
         .flex()
         .flex_col()
         .flex_1()
         .min_w(px(0.))
-        .child(
-            div()
-                .flex()
-                .flex_none()
-                .border_b_1()
-                .border_color(theme.border)
-                .child(tab_label(state, theme)),
-        )
+        .child(tab_strip::render_tab_strip(
+            state,
+            theme,
+            callbacks.tab_strip,
+        ))
+        .when_some(active_request_path, |el, path| {
+            el.child(render_preview_row(state, theme, &path, &callbacks.on_run))
+        })
         .child(body)
 }

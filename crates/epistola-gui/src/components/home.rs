@@ -148,13 +148,19 @@ where
             .px(px(24.))
             .pt(px(48.))
             .pb(px(40.))
-            .child(div().text_size(px(21.)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(theme.text).child("Welcome to ϵpistola"))
+            .child(
+                div()
+                    .text_size(px(21.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.text)
+                    .child("Welcome to ϵpistola"),
+            )
             .child(
                 div()
                     .mb(px(32.))
                     .text_size(px(13.))
                     .text_color(theme.text_muted)
-                    .child("Keyboard-first HTTP client. Edit .req.toml directly, run it, never leave the keyboard."),
+                    .child("Yes, another HTTP client..."),
             )
             .child(
                 div()
@@ -165,7 +171,13 @@ where
                         div()
                             .flex_1()
                             .min_w(px(0.))
-                            .child(div().text_size(px(10.5)).text_color(theme.text_faint).mb(px(12.)).child("RECENT COLLECTIONS"))
+                            .child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .text_color(theme.text_faint)
+                                    .mb(px(12.))
+                                    .child("RECENT COLLECTIONS"),
+                            )
                             .when_some(state.collection.as_ref().err(), |el, message| {
                                 el.child(
                                     div()
@@ -181,12 +193,34 @@ where
                         div()
                             .flex_none()
                             .w(px(260.))
-                            .child(div().text_size(px(10.5)).text_color(theme.text_faint).mb(px(12.)).child("START"))
-                            .child(start_action("Open collection…", Some("⌘O"), theme, Some(Box::new(callbacks.on_open_collection))))
-                            .child(start_action("New collection", None, theme, Some(Box::new(callbacks.on_new_collection))))
+                            .child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .text_color(theme.text_faint)
+                                    .mb(px(12.))
+                                    .child("START"),
+                            )
+                            .child(start_action(
+                                "Open collection…",
+                                Some("⌘O"),
+                                theme,
+                                Some(Box::new(callbacks.on_open_collection)),
+                            ))
+                            .child(start_action(
+                                "New collection",
+                                None,
+                                theme,
+                                Some(Box::new(callbacks.on_new_collection)),
+                            ))
                             .child(start_action("Clone repository…", None, theme, None))
                             .when_some(state.collection_action_error.clone(), |el, message| {
-                                el.child(div().mt(px(4.)).text_size(px(11.5)).text_color(theme.method_delete).child(message))
+                                el.child(
+                                    div()
+                                        .mt(px(4.))
+                                        .text_size(px(11.5))
+                                        .text_color(theme.method_delete)
+                                        .child(message),
+                                )
                             }),
                     ),
             )
@@ -195,17 +229,43 @@ where
                     .pt(px(20.))
                     .border_t_1()
                     .border_color(theme.border)
-                    .child(div().mb(px(14.)).text_size(px(10.5)).text_color(theme.text_faint).child("KEYBOARD SHORTCUTS"))
+                    .child(
+                        div()
+                            .mb(px(14.))
+                            .text_size(px(10.5))
+                            .text_color(theme.text_faint)
+                            .child("KEYBOARD SHORTCUTS"),
+                    )
                     .child(
                         div()
                             .flex()
                             .flex_wrap()
                             .gap(px(8.))
-                            .child(div().w(px(340.)).child(shortcut_row("Command palette", "⌘K", theme)))
-                            .child(div().w(px(340.)).child(shortcut_row("Quick open (go to request)", "⌘P", theme)))
-                            .child(div().w(px(340.)).child(shortcut_row("Settings", "⌘,", theme)))
-                            .child(div().w(px(340.)).child(shortcut_row("New request", "⌘N", theme)))
-                            .child(div().w(px(340.)).child(shortcut_row("Run request", "⌘⏎", theme)))
+                            .child(div().w(px(340.)).child(shortcut_row(
+                                "Command palette",
+                                "⌘K",
+                                theme,
+                            )))
+                            .child(div().w(px(340.)).child(shortcut_row(
+                                "Quick open (go to request)",
+                                "⌘P",
+                                theme,
+                            )))
+                            .child(
+                                div()
+                                    .w(px(340.))
+                                    .child(shortcut_row("Settings", "⌘,", theme)),
+                            )
+                            .child(div().w(px(340.)).child(shortcut_row(
+                                "New request",
+                                "⌘N",
+                                theme,
+                            )))
+                            .child(div().w(px(340.)).child(shortcut_row(
+                                "Run request",
+                                "⌘⏎",
+                                theme,
+                            )))
                             .child(div().w(px(340.)).child(shortcut_row("Home", "⌘0", theme))),
                     ),
             ),

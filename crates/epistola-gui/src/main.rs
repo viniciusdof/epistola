@@ -9,7 +9,9 @@ mod theme;
 
 use std::env;
 
-use gpui::{prelude::*, px, size, App, Bounds, WindowBounds, WindowOptions};
+use gpui::{
+    point, prelude::*, px, size, App, Bounds, TitlebarOptions, WindowBounds, WindowOptions,
+};
 
 use assets::Assets;
 use root::EpistolaGui;
@@ -32,6 +34,11 @@ fn main() {
             let window = cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: None,
+                        appears_transparent: true,
+                        traffic_light_position: Some(point(px(9.), px(9.))),
+                    }),
                     ..Default::default()
                 },
                 |_, cx| cx.new(|_| EpistolaGui::new(cwd.clone())),

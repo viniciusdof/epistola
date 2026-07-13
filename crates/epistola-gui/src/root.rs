@@ -9,15 +9,18 @@ use gpui::{
     div, prelude::*, px, App, ClickEvent, Context, IntoElement, Render, WeakEntity, Window,
 };
 
+use crate::components::env_popover;
+use crate::components::history_modal;
 use crate::components::kit::MethodTag;
 use crate::components::palette::{render_palette_overlay, PaletteItem, SelectHandler};
 use crate::components::sidebar::SidebarCallbacks;
+use crate::components::tab_strip::TabStripCallbacks;
 use crate::components::titlebar::TitlebarCallbacks;
 use crate::components::{
     activity_rail, editor, home, response_drawer, sidebar, statusbar, titlebar,
 };
 use crate::execution;
-use crate::state::{ActivityResult, AppState, Overlay, View};
+use crate::state::{ActiveFile, ActivityResult, AppState, Overlay, ResponseSubTab, View};
 use crate::theme::Theme;
 
 pub struct EpistolaGui {
@@ -87,6 +90,7 @@ fn format_lint_report(report: &epistola_engine::requests::LintReport) -> String 
 
 fn command_palette_items(weak: WeakEntity<EpistolaGui>, state: &AppState) -> Vec<PaletteItem> {
     let mut items = Vec::new();
+    let active_tab = state.active_file.clone();
 
     if let Some(path) = state.active_request().map(|r| r.abs_path.clone()) {
         items.push(
@@ -100,6 +104,7 @@ fn command_palette_items(weak: WeakEntity<EpistolaGui>, state: &AppState) -> Vec
         );
 
         let resolve_path = state.active_request().map(|r| r.abs_path.clone());
+        let resolve_tab = active_tab.clone();
         items.push(
             PaletteItem::new(
                 "Show resolved request",
@@ -107,17 +112,27 @@ fn command_palette_items(weak: WeakEntity<EpistolaGui>, state: &AppState) -> Vec
                     let Some(path) = resolve_path.clone() else {
                         return;
                     };
-                    let result = epistola_engine::run::resolve_saved_request(
+                    let outcome = epistola_engine::run::resolve_saved_request(
                         &path,
                         this.state.environment.as_deref(),
                         Default::default(),
-                    )
-                    .map(|(_collection, resolved)| format_resolved_request(&resolved.request))
-                    .map_err(|err| err.to_string());
-                    this.state.activity = match result {
-                        Ok(text) => ActivityResult::Resolved(text),
-                        Err(err) => ActivityResult::ResolvedFailed(err),
+                    );
+                    let activity = match outcome {
+                        Ok((_collection, resolved)) => {
+                            ActivityResult::Resolved(format_resolved_request(&resolved.request))
+                        }
+
+                        Err(engine_err) => match execution::classify_engine_error(engine_err) {
+                            ActivityResult::UnresolvedVariable { variable } => {
+                                ActivityResult::UnresolvedVariable { variable }
+                            }
+                            ActivityResult::RunFailed(message) => {
+                                ActivityResult::ResolvedFailed(message)
+                            }
+                            other => other,
+                        },
                     };
+                    this.state.activity.insert(resolve_tab.clone(), activity);
                 }),
             )
             .shortcut("⌘⇧R"),
@@ -125,10 +140,11 @@ fn command_palette_items(weak: WeakEntity<EpistolaGui>, state: &AppState) -> Vec
     }
 
     if state.collection.is_ok() {
+        let lint_tab = active_tab.clone();
         items.push(
             PaletteItem::new(
                 "Lint collection",
-                make_action(weak.clone(), |this, _cx| {
+                make_action(weak.clone(), move |this, _cx| {
                     let result = epistola_engine::discovery::discover_collection(&this.state.cwd)
                         .and_then(|collection| {
                             epistola_engine::requests::lint_collection(
@@ -138,10 +154,11 @@ fn command_palette_items(weak: WeakEntity<EpistolaGui>, state: &AppState) -> Vec
                         })
                         .map(|report| format_lint_report(&report))
                         .map_err(|err| err.to_string());
-                    this.state.activity = match result {
+                    let activity = match result {
                         Ok(text) => ActivityResult::Linted(text),
                         Err(err) => ActivityResult::LintFailed(err),
                     };
+                    this.state.activity.insert(lint_tab.clone(), activity);
                 }),
             )
             .shortcut("⌘⇧L"),
@@ -197,29 +214,41 @@ impl Render for EpistolaGui {
         let weak = cx.entity().downgrade();
 
         let rail_callbacks = activity_rail::RailCallbacks {
-            on_home: cx.listener(|this, _: &ClickEvent, _window, cx| {
+            on_home: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| {
                 this.state.view = View::Home;
                 cx.notify();
-            }),
-            on_workspace: cx.listener(|this, _: &ClickEvent, _window, cx| {
+            })),
+            on_workspace: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| {
                 this.state.view = View::Workspace;
                 cx.notify();
-            }),
-            on_settings: cx.listener(|this, _: &ClickEvent, _window, cx| {
+            })),
+            on_environments: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                this.state.overlay = Some(Overlay::EnvironmentPicker);
+                cx.notify();
+            })),
+            on_history: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                this.state.overlay = Some(Overlay::History);
+                cx.notify();
+            })),
+            on_settings: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| {
                 this.state.open_config();
                 cx.notify();
-            }),
+            })),
         };
 
         let titlebar_callbacks = TitlebarCallbacks {
-            on_quick_open: cx.listener(|this, _: &ClickEvent, _window, cx| {
+            on_quick_open: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| {
                 this.state.overlay = Some(Overlay::QuickOpen);
                 cx.notify();
-            }),
-            on_command_palette: cx.listener(|this, _: &ClickEvent, _window, cx| {
+            })),
+            on_command_palette: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| {
                 this.state.overlay = Some(Overlay::CommandPalette);
                 cx.notify();
-            }),
+            })),
+            on_open_env_picker: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| {
+                this.state.overlay = Some(Overlay::EnvironmentPicker);
+                cx.notify();
+            })),
         };
 
         let sidebar_callbacks = SidebarCallbacks {
@@ -237,6 +266,24 @@ impl Render for EpistolaGui {
                 Rc::new(move |_window: &mut Window, cx: &mut App| {
                     let _ = weak.update(cx, |this, cx| {
                         this.state.open_config();
+                        cx.notify();
+                    });
+                })
+            },
+            on_open_folder: {
+                let weak = weak.clone();
+                Rc::new(move |dir: PathBuf, _window: &mut Window, cx: &mut App| {
+                    let _ = weak.update(cx, |this, cx| {
+                        this.state.open_folder_doc(dir);
+                        cx.notify();
+                    });
+                })
+            },
+            on_open_environment: {
+                let weak = weak.clone();
+                Rc::new(move |name: String, _window: &mut Window, cx: &mut App| {
+                    let _ = weak.update(cx, |this, cx| {
+                        this.state.open_environment_doc(name);
                         cx.notify();
                     });
                 })
@@ -261,9 +308,45 @@ impl Render for EpistolaGui {
             }),
         };
 
+        let editor_callbacks = editor::EditorCallbacks {
+            tab_strip: TabStripCallbacks {
+                on_select: {
+                    let weak = weak.clone();
+                    Rc::new(
+                        move |file: ActiveFile, _window: &mut Window, cx: &mut App| {
+                            let _ = weak.update(cx, |this, cx| {
+                                this.state.switch_tab(file);
+                                cx.notify();
+                            });
+                        },
+                    )
+                },
+                on_close: {
+                    let weak = weak.clone();
+                    Rc::new(
+                        move |file: ActiveFile, _window: &mut Window, cx: &mut App| {
+                            let _ = weak.update(cx, |this, cx| {
+                                this.state.close_tab(&file);
+                                cx.notify();
+                            });
+                        },
+                    )
+                },
+            },
+            on_run: {
+                let weak = weak.clone();
+                Rc::new(move |path: PathBuf, _window: &mut Window, cx: &mut App| {
+                    let _ = weak.update(cx, |this, cx| {
+                        let environment = this.state.environment.clone();
+                        execution::spawn_run(path, environment, cx);
+                    });
+                })
+            },
+        };
+
         let show_drawer = self.state.view == View::Workspace
             && (self.state.active_file.is_request()
-                || !matches!(self.state.activity, ActivityResult::Idle));
+                || !matches!(self.state.active_activity(), ActivityResult::Idle));
 
         let viewport: gpui::AnyElement = match self.state.view {
             View::Home => home::render_home(&self.state, theme, home_callbacks).into_any_element(),
@@ -276,8 +359,20 @@ impl Render for EpistolaGui {
                     theme,
                     sidebar_callbacks,
                 ))
-                .child(editor::render_editor(&self.state, theme))
+                .child(editor::render_editor(&self.state, theme, editor_callbacks))
                 .into_any_element(),
+        };
+
+        let on_select_subtab: response_drawer::SubtabSelectHandler = {
+            let weak = weak.clone();
+            Rc::new(
+                move |subtab: ResponseSubTab, _window: &mut Window, cx: &mut App| {
+                    let _ = weak.update(cx, |this, cx| {
+                        this.state.response_subtab = subtab;
+                        cx.notify();
+                    });
+                },
+            )
         };
 
         div()
@@ -307,31 +402,88 @@ impl Render for EpistolaGui {
             .when(show_drawer, |el| {
                 el.child(response_drawer::render_response_drawer(
                     theme,
-                    &self.state.activity,
+                    self.state.active_activity(),
+                    self.state.response_subtab,
+                    on_select_subtab,
                 ))
             })
             .child(statusbar::render_statusbar(&self.state, theme))
-            .when_some(self.state.overlay, |el, overlay| {
-                let (placeholder, items): (&'static str, Vec<PaletteItem>) = match overlay {
-                    Overlay::CommandPalette => (
+            .when_some(self.state.overlay, |el, overlay| match overlay {
+                Overlay::CommandPalette => {
+                    let items = command_palette_items(weak.clone(), &self.state);
+                    let on_dismiss = cx.listener(|this, _: &ClickEvent, _window, cx| {
+                        this.state.overlay = None;
+                        cx.notify();
+                    });
+                    el.child(render_palette_overlay(
                         "Type a command…",
-                        command_palette_items(weak.clone(), &self.state),
-                    ),
-                    Overlay::QuickOpen => (
+                        items,
+                        theme,
+                        on_dismiss,
+                    ))
+                }
+                Overlay::QuickOpen => {
+                    let items = quick_open_items(weak.clone(), &self.state, theme);
+                    let on_dismiss = cx.listener(|this, _: &ClickEvent, _window, cx| {
+                        this.state.overlay = None;
+                        cx.notify();
+                    });
+                    el.child(render_palette_overlay(
                         "Go to request…",
-                        quick_open_items(weak.clone(), &self.state, theme),
-                    ),
-                };
-                let on_dismiss = cx.listener(|this, _: &ClickEvent, _window, cx| {
-                    this.state.overlay = None;
-                    cx.notify();
-                });
-                el.child(render_palette_overlay(
-                    placeholder,
-                    items,
-                    theme,
-                    on_dismiss,
-                ))
+                        items,
+                        theme,
+                        on_dismiss,
+                    ))
+                }
+                Overlay::EnvironmentPicker => {
+                    let environments = self
+                        .state
+                        .collection
+                        .as_ref()
+                        .map(|c| c.environments.clone())
+                        .unwrap_or_default();
+                    let current = self.state.environment.clone();
+                    let on_select = {
+                        let weak = weak.clone();
+                        move |name: String, _window: &mut Window, cx: &mut App| {
+                            let _ = weak.update(cx, |this, cx| {
+                                this.state.set_environment(name);
+                                this.state.overlay = None;
+                                cx.notify();
+                            });
+                        }
+                    };
+                    let on_dismiss = cx.listener(|this, _: &ClickEvent, _window, cx| {
+                        this.state.overlay = None;
+                        cx.notify();
+                    });
+                    el.child(env_popover::render_env_popover(
+                        &environments,
+                        current.as_deref(),
+                        theme,
+                        on_select,
+                        on_dismiss,
+                    ))
+                }
+                Overlay::History => {
+                    let entries = self
+                        .state
+                        .collection
+                        .as_ref()
+                        .ok()
+                        .map(|collection| {
+                            epistola_engine::history::read_entries(&collection.root)
+                                .unwrap_or_default()
+                        })
+                        .unwrap_or_default();
+                    let on_dismiss = cx.listener(|this, _: &ClickEvent, _window, cx| {
+                        this.state.overlay = None;
+                        cx.notify();
+                    });
+                    el.child(history_modal::render_history_modal(
+                        &entries, theme, on_dismiss,
+                    ))
+                }
             })
     }
 }

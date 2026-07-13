@@ -22,6 +22,8 @@ epistola-format.workspace = true
 epistola-engine.workspace = true
 tokio.workspace = true
 rust-embed.workspace = true
+serde_json = "1.0.150"
+time = { version = "0.3.53", features = ["formatting", "parsing"] }
 
 [lints]
 workspace = true

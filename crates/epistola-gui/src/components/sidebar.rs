@@ -3,12 +3,14 @@ use std::path::Path;
 use gpui::{div, prelude::*, px, IntoElement, SharedString};
 
 use crate::collection::{FolderEntry, RequestEntry};
-use crate::components::kit::{icon, IconName, MethodTag, PathClickHandler};
+use crate::components::kit::{icon, IconName, MethodTag, PathClickHandler, StringClickHandler};
 use crate::components::palette::SelectHandler;
 use crate::state::{ActiveFile, AppState};
 use crate::theme::Theme;
 
 pub type OpenRequestHandler = PathClickHandler;
+pub type OpenFolderHandler = PathClickHandler;
+pub type OpenEnvironmentHandler = StringClickHandler;
 
 fn section_label(label: impl Into<SharedString>, theme: Theme) -> impl IntoElement {
     div()
@@ -44,6 +46,8 @@ fn selectable_row(active: bool, indent: f32, theme: Theme) -> gpui::Div {
 pub struct SidebarCallbacks {
     pub on_open_request: OpenRequestHandler,
     pub on_open_config: SelectHandler,
+    pub on_open_folder: OpenFolderHandler,
+    pub on_open_environment: OpenEnvironmentHandler,
 }
 
 fn render_request_row(
@@ -71,40 +75,56 @@ fn render_request_row(
         )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_folder_rows(
+    collection_root: &Path,
     folder: &FolderEntry,
     depth: usize,
     active_path: Option<&Path>,
+    active_folder: Option<&Path>,
     theme: Theme,
     on_open_request: &OpenRequestHandler,
+    on_open_folder: &OpenFolderHandler,
     out: &mut Vec<gpui::AnyElement>,
 ) {
-    out.push(
-        div()
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .pl(px(12. + depth as f32 * 14.))
-            .pr(px(10.))
-            .py(px(4.))
-            .text_color(theme.text)
-            .child(icon(IconName::ChevronDown, px(10.), theme.text_faint))
-            .child(div().child(folder.name.clone()))
-            .child(div().flex_1())
-            .when(folder.has_folder_toml, |el| {
-                el.child(
-                    div()
-                        .text_size(px(9.5))
-                        .text_color(theme.text_faint)
-                        .border_1()
-                        .border_color(theme.border)
-                        .rounded(px(3.))
-                        .px(px(4.))
-                        .child("ƒ"),
-                )
-            })
-            .into_any_element(),
-    );
+    let folder_abs_path = collection_root.join(&folder.rel_path);
+    let folder_active = folder.has_folder_toml && active_folder == Some(folder_abs_path.as_path());
+    let mut row = div()
+        .id(SharedString::from(format!(
+            "sidebar-folder-{}",
+            folder.rel_path.display()
+        )))
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .pl(px(12. + depth as f32 * 14.))
+        .pr(px(10.))
+        .py(px(4.))
+        .text_color(if folder_active {
+            theme.accent
+        } else {
+            theme.text
+        })
+        .child(icon(IconName::ChevronDown, px(10.), theme.text_faint))
+        .child(div().child(folder.name.clone()))
+        .child(div().flex_1());
+    if folder.has_folder_toml {
+        let on_open_folder = on_open_folder.clone();
+        row = row
+            .cursor_pointer()
+            .on_click(move |_event, window, cx| on_open_folder(folder_abs_path.clone(), window, cx))
+            .child(
+                div()
+                    .text_size(px(9.5))
+                    .text_color(theme.text_faint)
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(px(3.))
+                    .px(px(4.))
+                    .child("ƒ"),
+            );
+    }
+    out.push(row.into_any_element());
 
     for request in &folder.requests {
         let active = active_path == Some(request.abs_path.as_path());
@@ -114,7 +134,17 @@ fn render_folder_rows(
         );
     }
     for child in &folder.folders {
-        render_folder_rows(child, depth + 1, active_path, theme, on_open_request, out);
+        render_folder_rows(
+            collection_root,
+            child,
+            depth + 1,
+            active_path,
+            active_folder,
+            theme,
+            on_open_request,
+            on_open_folder,
+            out,
+        );
     }
 }
 
@@ -147,6 +177,14 @@ pub fn render_sidebar(
         ActiveFile::Request(path) => Some(path.as_path()),
         _ => None,
     };
+    let active_folder = match &state.active_file {
+        ActiveFile::Folder(path) => Some(path.as_path()),
+        _ => None,
+    };
+    let active_environment = match &state.active_file {
+        ActiveFile::Environment(name) => Some(name.as_str()),
+        _ => None,
+    };
 
     match &state.collection {
         Ok(collection) => {
@@ -162,11 +200,14 @@ pub fn render_sidebar(
             }
             for folder in &collection.folders {
                 render_folder_rows(
+                    &collection.root,
                     folder,
                     0,
                     active_path,
+                    active_folder,
                     theme,
                     &callbacks.on_open_request,
+                    &callbacks.on_open_folder,
                     &mut rows,
                 );
             }
@@ -184,12 +225,15 @@ pub fn render_sidebar(
                 );
             } else {
                 for env in &collection.environments {
+                    let active = active_environment == Some(env.as_str());
+                    let name = env.clone();
+                    let on_open_environment = callbacks.on_open_environment.clone();
                     list = list.child(
-                        div()
-                            .pl(px(26.))
-                            .pr(px(10.))
-                            .py(px(4.))
-                            .text_color(theme.text_muted)
+                        selectable_row(active, 0., theme)
+                            .id(SharedString::from(format!("sidebar-env-{env}")))
+                            .on_click(move |_event, window, cx| {
+                                on_open_environment(name.clone(), window, cx)
+                            })
                             .child(env.clone()),
                     );
                 }
