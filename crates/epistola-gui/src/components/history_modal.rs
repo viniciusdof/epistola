@@ -1,4 +1,4 @@
-use gpui::{div, prelude::*, px, App, ClickEvent, IntoElement, SharedString, Window};
+use gpui::{div, prelude::*, px, App, ClickEvent, FocusHandle, IntoElement, SharedString, Window};
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -7,12 +7,15 @@ use crate::theme::Theme;
 
 pub fn render_history_modal(
     entries: &[Value],
+    selected: usize,
     theme: Theme,
+    focus_handle: &FocusHandle,
     on_dismiss: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let empty = entries.is_empty();
     div()
         .id("history-backdrop")
+        .track_focus(focus_handle)
         .absolute()
         .inset_0()
         .flex()
@@ -58,7 +61,12 @@ pub fn render_history_modal(
                         .p(px(6.))
                         .max_h(px(380.))
                         .overflow_y_scroll()
-                        .children(entries.iter().map(|entry| render_row(entry, theme)))
+                        .children(
+                            entries
+                                .iter()
+                                .enumerate()
+                                .map(|(i, entry)| render_row(entry, theme, i == selected)),
+                        )
                         .when(empty, |el| {
                             el.child(
                                 div()
@@ -84,7 +92,7 @@ pub fn render_history_modal(
         )
 }
 
-fn render_row(entry: &Value, theme: Theme) -> impl IntoElement {
+fn render_row(entry: &Value, theme: Theme, is_selected: bool) -> impl IntoElement {
     let method = entry["request"]
         .get("method")
         .and_then(Value::as_str)
@@ -117,6 +125,7 @@ fn render_row(entry: &Value, theme: Theme) -> impl IntoElement {
         .px(px(10.))
         .py(px(9.))
         .rounded(px(6.))
+        .when(is_selected, |el| el.bg(theme.surface))
         .text_size(px(12.))
         .child(
             div()

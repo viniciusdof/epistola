@@ -421,6 +421,7 @@ pub fn render_editor(
 
     let mut body = div()
         .id("editor-code-view")
+        .track_focus(&focus_handle)
         .flex_1()
         .overflow_y_scroll()
         .overflow_x_scroll()
@@ -436,7 +437,6 @@ pub fn render_editor(
                 focus_handle: focus_handle.clone(),
             };
             body.key_context("Editor")
-                .track_focus(&focus_handle)
                 .on_action(cx.listener(EpistolaGui::backspace))
                 .on_action(cx.listener(EpistolaGui::delete))
                 .on_action(cx.listener(EpistolaGui::insert_newline))

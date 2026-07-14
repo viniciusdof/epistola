@@ -85,6 +85,9 @@ pub struct AppState {
     pub collection_action_error: Option<String>,
     pub recent_collections: Vec<PathBuf>,
     pub editor_buffers: HashMap<ActiveFile, EditorBuffer>,
+
+    pub overlay_query: String,
+    pub overlay_selected: usize,
 }
 
 impl AppState {
@@ -102,6 +105,8 @@ impl AppState {
             collection_action_error: None,
             recent_collections: Vec::new(),
             editor_buffers: HashMap::new(),
+            overlay_query: String::new(),
+            overlay_selected: 0,
         };
         state.open_collection_at(cwd);
         state.view = View::Home;
@@ -130,7 +135,7 @@ impl AppState {
         self.cwd = cwd;
         self.collection = collection;
         self.view = View::Workspace;
-        self.overlay = None;
+        self.close_overlay();
         self.activity.clear();
         self.response_subtab = ResponseSubTab::default();
         self.collection_action_error = None;
@@ -276,5 +281,17 @@ impl AppState {
 
     pub fn set_environment(&mut self, name: String) {
         self.environment = Some(name);
+    }
+
+    pub fn open_overlay(&mut self, overlay: Overlay) {
+        self.overlay = Some(overlay);
+        self.overlay_query.clear();
+        self.overlay_selected = 0;
+    }
+
+    pub fn close_overlay(&mut self) {
+        self.overlay = None;
+        self.overlay_query.clear();
+        self.overlay_selected = 0;
     }
 }

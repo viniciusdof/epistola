@@ -1,13 +1,15 @@
 use std::rc::Rc;
 
-use gpui::{div, prelude::*, px, App, ClickEvent, IntoElement, SharedString, Window};
+use gpui::{div, prelude::*, px, App, ClickEvent, FocusHandle, IntoElement, SharedString, Window};
 
 use crate::theme::Theme;
 
 pub fn render_env_popover(
     environments: &[String],
     current: Option<&str>,
+    selected: usize,
     theme: Theme,
+    focus_handle: &FocusHandle,
     on_select: impl Fn(String, &mut Window, &mut App) + 'static,
     on_dismiss: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
@@ -15,6 +17,7 @@ pub fn render_env_popover(
 
     div()
         .id("env-popover-backdrop")
+        .track_focus(focus_handle)
         .absolute()
         .inset_0()
         .flex()
@@ -43,7 +46,7 @@ pub fn render_env_popover(
                         .text_color(theme.text_faint)
                         .child("Environments"),
                 )
-                .children(environments.iter().map(|env| {
+                .children(environments.iter().enumerate().map(|(i, env)| {
                     let active = current == Some(env.as_str());
                     let name = env.clone();
                     let on_select = on_select.clone();
@@ -58,6 +61,7 @@ pub fn render_env_popover(
                         .text_size(px(12.5))
                         .text_color(theme.text)
                         .cursor_pointer()
+                        .when(i == selected, |el| el.bg(theme.surface))
                         .hover(|el| el.bg(theme.surface))
                         .on_click(move |_event, window, cx| {
                             cx.stop_propagation();

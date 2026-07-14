@@ -6,8 +6,8 @@ use std::rc::Rc;
 
 use epistola_core::{Body, Request};
 use gpui::{
-    div, prelude::*, px, App, ClickEvent, Context, FocusHandle, Focusable, IntoElement, Render,
-    WeakEntity, Window,
+    div, prelude::*, px, App, ClickEvent, Context, FocusHandle, Focusable, IntoElement,
+    KeyDownEvent, Render, WeakEntity, Window,
 };
 
 use crate::actions::{
@@ -19,7 +19,9 @@ use crate::components::editor_text::EditorLayout;
 use crate::components::env_popover;
 use crate::components::history_modal;
 use crate::components::kit::MethodTag;
-use crate::components::palette::{render_palette_overlay, PaletteItem, SelectHandler};
+use crate::components::palette::{
+    filter_items, render_palette_overlay, PaletteItem, SelectHandler,
+};
 use crate::components::sidebar::SidebarCallbacks;
 use crate::components::tab_strip::TabStripCallbacks;
 use crate::components::titlebar::TitlebarCallbacks;
@@ -37,6 +39,7 @@ pub struct EpistolaGui {
     pub(crate) state: AppState,
     theme: Theme,
     pub(crate) editor_focus_handle: FocusHandle,
+    overlay_focus_handle: FocusHandle,
     pub(crate) editor_layout: Option<EditorLayout>,
     pub(crate) editor_mouse_selecting: bool,
 }
@@ -47,6 +50,7 @@ impl EpistolaGui {
             state: AppState::new(cwd),
             theme: Theme::dark(),
             editor_focus_handle: cx.focus_handle(),
+            overlay_focus_handle: cx.focus_handle(),
             editor_layout: None,
             editor_mouse_selecting: false,
         }
@@ -60,32 +64,40 @@ impl Focusable for EpistolaGui {
 }
 
 impl EpistolaGui {
-    fn toggle_command_palette(&mut self, cx: &mut Context<Self>) {
-        self.state.overlay = if self.state.overlay == Some(Overlay::CommandPalette) {
-            None
+    fn open_overlay(&mut self, overlay: Overlay, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.open_overlay(overlay);
+        window.focus(&self.overlay_focus_handle, cx);
+        cx.notify();
+    }
+
+    fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.close_overlay();
+        window.focus(&self.editor_focus_handle, cx);
+        cx.notify();
+    }
+
+    fn toggle_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.overlay == Some(Overlay::CommandPalette) {
+            self.close_overlay(window, cx);
         } else {
-            Some(Overlay::CommandPalette)
-        };
-        cx.notify();
+            self.open_overlay(Overlay::CommandPalette, window, cx);
+        }
     }
 
-    fn toggle_quick_open(&mut self, cx: &mut Context<Self>) {
-        self.state.overlay = if self.state.overlay == Some(Overlay::QuickOpen) {
-            None
+    fn toggle_quick_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.overlay == Some(Overlay::QuickOpen) {
+            self.close_overlay(window, cx);
         } else {
-            Some(Overlay::QuickOpen)
-        };
-        cx.notify();
+            self.open_overlay(Overlay::QuickOpen, window, cx);
+        }
     }
 
-    fn open_environment_picker(&mut self, cx: &mut Context<Self>) {
-        self.state.overlay = Some(Overlay::EnvironmentPicker);
-        cx.notify();
+    fn open_environment_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_overlay(Overlay::EnvironmentPicker, window, cx);
     }
 
-    fn open_history(&mut self, cx: &mut Context<Self>) {
-        self.state.overlay = Some(Overlay::History);
-        cx.notify();
+    fn open_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_overlay(Overlay::History, window, cx);
     }
 
     fn open_settings(&mut self, cx: &mut Context<Self>) {
@@ -166,10 +178,125 @@ impl EpistolaGui {
         cx.notify();
     }
 
-    fn dismiss_overlay(&mut self, cx: &mut Context<Self>) {
+    fn dismiss_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.state.overlay.is_some() {
-            self.state.overlay = None;
-            cx.notify();
+            self.close_overlay(window, cx);
+        }
+    }
+
+    fn overlay_items(&self, cx: &mut Context<Self>) -> Vec<PaletteItem> {
+        let weak = cx.entity().downgrade();
+        match self.state.overlay {
+            Some(Overlay::CommandPalette) => filter_items(
+                command_palette_items(weak, &self.state),
+                &self.state.overlay_query,
+            ),
+            Some(Overlay::QuickOpen) => filter_items(
+                quick_open_items(weak, &self.state, self.theme),
+                &self.state.overlay_query,
+            ),
+            _ => Vec::new(),
+        }
+    }
+
+    fn overlay_item_count(&self, cx: &mut Context<Self>) -> usize {
+        match self.state.overlay {
+            Some(Overlay::CommandPalette) | Some(Overlay::QuickOpen) => {
+                self.overlay_items(cx).len()
+            }
+            Some(Overlay::EnvironmentPicker) => self
+                .state
+                .collection
+                .as_ref()
+                .map(|collection| collection.environments.len())
+                .unwrap_or(0),
+            Some(Overlay::History) => self
+                .state
+                .collection
+                .as_ref()
+                .ok()
+                .map(|collection| {
+                    epistola_engine::history::read_entries(&collection.root)
+                        .unwrap_or_default()
+                        .len()
+                })
+                .unwrap_or(0),
+            Some(Overlay::ConfirmDiscard(_)) | None => 0,
+        }
+    }
+
+    fn move_overlay_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let count = self.overlay_item_count(cx);
+        if count == 0 {
+            return;
+        }
+        let count = count as isize;
+        let current = self.state.overlay_selected as isize;
+        let next = ((current + delta) % count + count) % count;
+        self.state.overlay_selected = next as usize;
+        cx.notify();
+    }
+
+    fn confirm_overlay_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(overlay) = self.state.overlay.clone() else {
+            return;
+        };
+        let selected = self.state.overlay_selected;
+        match overlay {
+            Overlay::CommandPalette | Overlay::QuickOpen => {
+                if let Some(item) = self.overlay_items(cx).into_iter().nth(selected) {
+                    let on_select = item.on_select;
+                    window.defer(cx, move |window, cx| on_select(window, cx));
+                }
+            }
+            Overlay::EnvironmentPicker => {
+                let name = self
+                    .state
+                    .collection
+                    .as_ref()
+                    .ok()
+                    .and_then(|collection| collection.environments.get(selected).cloned());
+                if let Some(name) = name {
+                    self.state.set_environment(name);
+                    self.close_overlay(window, cx);
+                }
+            }
+            Overlay::History | Overlay::ConfirmDiscard(_) => {}
+        }
+    }
+
+    fn handle_overlay_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.overlay.is_none() {
+            return;
+        }
+        let has_query = matches!(
+            self.state.overlay,
+            Some(Overlay::CommandPalette) | Some(Overlay::QuickOpen)
+        );
+        match event.keystroke.key.as_str() {
+            "down" => self.move_overlay_selection(1, cx),
+            "up" => self.move_overlay_selection(-1, cx),
+            "enter" => self.confirm_overlay_selection(window, cx),
+            "backspace" if has_query => {
+                self.state.overlay_query.pop();
+                self.state.overlay_selected = 0;
+                cx.notify();
+            }
+            _ if has_query => {
+                if let Some(ch) = event.keystroke.key_char.as_deref() {
+                    if !ch.is_empty() {
+                        self.state.overlay_query.push_str(ch);
+                        self.state.overlay_selected = 0;
+                        cx.notify();
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -178,10 +305,11 @@ fn make_action(
     weak: WeakEntity<EpistolaGui>,
     f: impl Fn(&mut EpistolaGui, &mut Context<EpistolaGui>) + 'static,
 ) -> SelectHandler {
-    Rc::new(move |_window, cx| {
+    Rc::new(move |window, cx| {
         let _ = weak.update(cx, |this, cx| {
             f(this, cx);
-            this.state.overlay = None;
+            this.state.close_overlay();
+            window.focus(&this.editor_focus_handle, cx);
             cx.notify();
         });
     })
@@ -310,11 +438,11 @@ impl Render for EpistolaGui {
             on_workspace: Box::new(
                 cx.listener(|this, _: &ClickEvent, _window, cx| this.go_workspace(cx)),
             ),
-            on_environments: Box::new(
-                cx.listener(|this, _: &ClickEvent, _window, cx| this.open_environment_picker(cx)),
-            ),
+            on_environments: Box::new(cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.open_environment_picker(window, cx)
+            })),
             on_history: Box::new(
-                cx.listener(|this, _: &ClickEvent, _window, cx| this.open_history(cx)),
+                cx.listener(|this, _: &ClickEvent, window, cx| this.open_history(window, cx)),
             ),
             on_settings: Box::new(
                 cx.listener(|this, _: &ClickEvent, _window, cx| this.open_settings(cx)),
@@ -323,14 +451,14 @@ impl Render for EpistolaGui {
 
         let titlebar_callbacks = TitlebarCallbacks {
             on_quick_open: Box::new(
-                cx.listener(|this, _: &ClickEvent, _window, cx| this.toggle_quick_open(cx)),
+                cx.listener(|this, _: &ClickEvent, window, cx| this.toggle_quick_open(window, cx)),
             ),
-            on_command_palette: Box::new(
-                cx.listener(|this, _: &ClickEvent, _window, cx| this.toggle_command_palette(cx)),
-            ),
-            on_open_env_picker: Box::new(
-                cx.listener(|this, _: &ClickEvent, _window, cx| this.open_environment_picker(cx)),
-            ),
+            on_command_palette: Box::new(cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.toggle_command_palette(window, cx)
+            })),
+            on_open_env_picker: Box::new(cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.open_environment_picker(window, cx)
+            })),
         };
 
         let sidebar_callbacks = SidebarCallbacks {
@@ -443,7 +571,13 @@ impl Render for EpistolaGui {
                 || !matches!(self.state.active_activity(), ActivityResult::Idle));
 
         let viewport: gpui::AnyElement = match self.state.view {
-            View::Home => home::render_home(&self.state, theme, home_callbacks).into_any_element(),
+            View::Home => home::render_home(
+                &self.state,
+                theme,
+                home_callbacks,
+                &self.editor_focus_handle,
+            )
+            .into_any_element(),
             View::Workspace => div()
                 .flex()
                 .flex_1()
@@ -482,12 +616,15 @@ impl Render for EpistolaGui {
             .size_full()
             .bg(theme.ink)
             .text_color(theme.text)
-            .on_action(cx.listener(|this, _: &ToggleCommandPalette, _window, cx| {
-                this.toggle_command_palette(cx)
+            .on_key_down(cx.listener(|this, event, window, cx| {
+                this.handle_overlay_key_down(event, window, cx)
             }))
-            .on_action(
-                cx.listener(|this, _: &ToggleQuickOpen, _window, cx| this.toggle_quick_open(cx)),
-            )
+            .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
+                this.toggle_command_palette(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleQuickOpen, window, cx| {
+                this.toggle_quick_open(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &OpenSettings, _window, cx| this.open_settings(cx)))
             .on_action(cx.listener(|this, _: &GoHome, _window, cx| this.go_home(cx)))
             .on_action(
@@ -505,7 +642,9 @@ impl Render for EpistolaGui {
             .on_action(cx.listener(|_this, _: &OpenCollection, _window, cx| {
                 crate::actions::spawn_open_collection(cx)
             }))
-            .on_action(cx.listener(|this, _: &Dismiss, _window, cx| this.dismiss_overlay(cx)))
+            .on_action(
+                cx.listener(|this, _: &Dismiss, window, cx| this.dismiss_overlay(window, cx)),
+            )
             .child(titlebar::render_titlebar(
                 &self.state,
                 theme,
@@ -535,28 +674,46 @@ impl Render for EpistolaGui {
             .child(statusbar::render_statusbar(&self.state, theme))
             .when_some(self.state.overlay.clone(), |el, overlay| match overlay {
                 Overlay::CommandPalette => {
-                    let items = command_palette_items(weak.clone(), &self.state);
-                    let on_dismiss = cx.listener(|this, _: &ClickEvent, _window, cx| {
-                        this.state.overlay = None;
-                        cx.notify();
+                    let items = filter_items(
+                        command_palette_items(weak.clone(), &self.state),
+                        &self.state.overlay_query,
+                    );
+                    let selected = self
+                        .state
+                        .overlay_selected
+                        .min(items.len().saturating_sub(1));
+                    let on_dismiss = cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.close_overlay(window, cx)
                     });
                     el.child(render_palette_overlay(
                         "Type a command…",
+                        &self.state.overlay_query,
                         items,
+                        selected,
                         theme,
+                        &self.overlay_focus_handle,
                         on_dismiss,
                     ))
                 }
                 Overlay::QuickOpen => {
-                    let items = quick_open_items(weak.clone(), &self.state, theme);
-                    let on_dismiss = cx.listener(|this, _: &ClickEvent, _window, cx| {
-                        this.state.overlay = None;
-                        cx.notify();
+                    let items = filter_items(
+                        quick_open_items(weak.clone(), &self.state, theme),
+                        &self.state.overlay_query,
+                    );
+                    let selected = self
+                        .state
+                        .overlay_selected
+                        .min(items.len().saturating_sub(1));
+                    let on_dismiss = cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.close_overlay(window, cx)
                     });
                     el.child(render_palette_overlay(
                         "Go to request…",
+                        &self.state.overlay_query,
                         items,
+                        selected,
                         theme,
+                        &self.overlay_focus_handle,
                         on_dismiss,
                     ))
                 }
@@ -568,24 +725,28 @@ impl Render for EpistolaGui {
                         .map(|c| c.environments.clone())
                         .unwrap_or_default();
                     let current = self.state.environment.clone();
+                    let selected = self
+                        .state
+                        .overlay_selected
+                        .min(environments.len().saturating_sub(1));
                     let on_select = {
                         let weak = weak.clone();
-                        move |name: String, _window: &mut Window, cx: &mut App| {
+                        move |name: String, window: &mut Window, cx: &mut App| {
                             let _ = weak.update(cx, |this, cx| {
                                 this.state.set_environment(name);
-                                this.state.overlay = None;
-                                cx.notify();
+                                this.close_overlay(window, cx);
                             });
                         }
                     };
-                    let on_dismiss = cx.listener(|this, _: &ClickEvent, _window, cx| {
-                        this.state.overlay = None;
-                        cx.notify();
+                    let on_dismiss = cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.close_overlay(window, cx)
                     });
                     el.child(env_popover::render_env_popover(
                         &environments,
                         current.as_deref(),
+                        selected,
                         theme,
+                        &self.overlay_focus_handle,
                         on_select,
                         on_dismiss,
                     ))
@@ -601,12 +762,19 @@ impl Render for EpistolaGui {
                                 .unwrap_or_default()
                         })
                         .unwrap_or_default();
-                    let on_dismiss = cx.listener(|this, _: &ClickEvent, _window, cx| {
-                        this.state.overlay = None;
-                        cx.notify();
+                    let selected = self
+                        .state
+                        .overlay_selected
+                        .min(entries.len().saturating_sub(1));
+                    let on_dismiss = cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.close_overlay(window, cx)
                     });
                     el.child(history_modal::render_history_modal(
-                        &entries, theme, on_dismiss,
+                        &entries,
+                        selected,
+                        theme,
+                        &self.overlay_focus_handle,
+                        on_dismiss,
                     ))
                 }
                 Overlay::ConfirmDiscard(kind) => {

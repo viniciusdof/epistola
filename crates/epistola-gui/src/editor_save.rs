@@ -80,6 +80,8 @@ mod tests {
             collection_action_error: None,
             recent_collections: Vec::new(),
             editor_buffers: HashMap::new(),
+            overlay_query: String::new(),
+            overlay_selected: 0,
         }
     }
 
