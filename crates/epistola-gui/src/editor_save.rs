@@ -82,6 +82,7 @@ mod tests {
             editor_buffers: HashMap::new(),
             overlay_query: String::new(),
             overlay_selected: 0,
+            overlay_error: None,
         }
     }
 

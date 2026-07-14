@@ -7,6 +7,7 @@ pub mod history_modal;
 pub mod home;
 pub mod kit;
 pub mod palette;
+pub mod prompt_modal;
 pub mod response_drawer;
 pub mod sidebar;
 pub mod statusbar;

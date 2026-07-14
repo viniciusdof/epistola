@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use epistola_format::LoadedCollection;
+use epistola_format::{LoadedCollection, RequestFile};
 
+use crate::discovery::discover_collection;
 use crate::error::EngineError;
 use crate::resolve::resolve_with_base_resolver;
 
@@ -98,6 +99,63 @@ pub fn lint_collection(
     }
 
     Ok(LintReport { checked, issues })
+}
+
+pub fn create_request(
+    cwd: &Path,
+    dir: &str,
+    name: &str,
+    method: &str,
+    url: &str,
+) -> Result<PathBuf, EngineError> {
+    let collection = discover_collection(cwd)?;
+    let target_dir = if dir.is_empty() {
+        collection.root
+    } else {
+        collection.root.join(dir)
+    };
+    let path = target_dir.join(format!("{}.req.toml", slugify(name)));
+    RequestFile::create(&path, name, method, url)?;
+    Ok(path)
+}
+
+pub fn delete_request(path: &Path) -> Result<(), EngineError> {
+    std::fs::remove_file(path).map_err(|source| EngineError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+pub fn rename_request(path: &Path, new_name: &str) -> Result<PathBuf, EngineError> {
+    let mut file = RequestFile::load(path)?;
+    file.request.name = new_name.to_string();
+
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let new_path = dir.join(format!("{}.req.toml", slugify(new_name)));
+
+    if new_path.as_path() == path {
+        file.save_at(path)?;
+    } else {
+        file.create_at(&new_path)?;
+        std::fs::remove_file(path).map_err(|source| EngineError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    }
+
+    Ok(new_path)
+}
+
+/// Copies a request to a new file under `new_name`, in the same directory.
+pub fn duplicate_request(path: &Path, new_name: &str) -> Result<PathBuf, EngineError> {
+    let mut file = RequestFile::load(path)?;
+    file.request.name = new_name.to_string();
+
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let new_path = dir.join(format!("{}.req.toml", slugify(new_name)));
+
+    file.create_at(&new_path)?;
+    Ok(new_path)
 }
 
 #[cfg(test)]
@@ -276,5 +334,115 @@ mod tests {
             .unwrap()
             .issues
             .is_empty());
+    }
+
+    #[test]
+    fn create_request_errors_outside_a_collection() {
+        let dir = tempdir().unwrap();
+        assert!(create_request(dir.path(), "", "List Users", "GET", "https://x.test").is_err());
+    }
+
+    #[test]
+    fn create_request_writes_a_slugified_file_at_the_collection_root() {
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+
+        let path = create_request(dir.path(), "", "List Users", "GET", "https://x.test").unwrap();
+
+        assert_eq!(path, dir.path().join("list-users.req.toml"));
+        let file = RequestFile::load(&path).unwrap();
+        assert_eq!(file.request.name, "List Users");
+    }
+
+    #[test]
+    fn create_request_writes_inside_the_given_subdirectory() {
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+
+        let path =
+            create_request(dir.path(), "auth", "Login", "POST", "https://x.test/login").unwrap();
+
+        assert_eq!(path, dir.path().join("auth/login.req.toml"));
+    }
+
+    #[test]
+    fn create_request_refuses_to_overwrite_an_existing_file() {
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        RequestFile::create(&dir.path().join("a.req.toml"), "A", "GET", "https://x.test").unwrap();
+
+        assert!(create_request(dir.path(), "", "A", "GET", "https://y.test").is_err());
+    }
+
+    #[test]
+    fn delete_request_removes_the_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("a.req.toml");
+        RequestFile::create(&path, "A", "GET", "https://x.test").unwrap();
+
+        delete_request(&path).unwrap();
+
+        assert!(!path.is_file());
+    }
+
+    #[test]
+    fn delete_request_errors_when_the_file_is_missing() {
+        let dir = tempdir().unwrap();
+        assert!(delete_request(&dir.path().join("nope.req.toml")).is_err());
+    }
+
+    #[test]
+    fn rename_request_moves_the_file_and_updates_the_name_field() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("a.req.toml");
+        RequestFile::create(&path, "A", "GET", "https://x.test").unwrap();
+
+        let new_path = rename_request(&path, "List Users").unwrap();
+
+        assert_eq!(new_path, dir.path().join("list-users.req.toml"));
+        assert!(!path.is_file());
+        let file = RequestFile::load(&new_path).unwrap();
+        assert_eq!(file.request.name, "List Users");
+    }
+
+    #[test]
+    fn rename_request_to_the_same_slug_overwrites_in_place() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("a.req.toml");
+        RequestFile::create(&path, "A", "GET", "https://x.test").unwrap();
+
+        let new_path = rename_request(&path, "A").unwrap();
+
+        assert_eq!(new_path, path);
+        let file = RequestFile::load(&path).unwrap();
+        assert_eq!(file.request.name, "A");
+    }
+
+    #[test]
+    fn duplicate_request_creates_a_new_file_and_preserves_the_original() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("a.req.toml");
+        RequestFile::create(&path, "A", "GET", "https://x.test").unwrap();
+
+        let new_path = duplicate_request(&path, "A Copy").unwrap();
+
+        assert!(path.is_file());
+        let original = RequestFile::load(&path).unwrap();
+        assert_eq!(original.request.name, "A");
+
+        assert_eq!(new_path, dir.path().join("a-copy.req.toml"));
+        let copy = RequestFile::load(&new_path).unwrap();
+        assert_eq!(copy.request.name, "A Copy");
+        assert_eq!(copy.request.url, "https://x.test");
+    }
+
+    #[test]
+    fn duplicate_request_refuses_to_overwrite_an_existing_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("a.req.toml");
+        RequestFile::create(&path, "A", "GET", "https://x.test").unwrap();
+        RequestFile::create(&dir.path().join("b.req.toml"), "B", "GET", "https://y.test").unwrap();
+
+        assert!(duplicate_request(&path, "B").is_err());
     }
 }

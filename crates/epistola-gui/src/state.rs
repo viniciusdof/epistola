@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::buffer::EditorBuffer;
 use crate::collection::{self, CollectionTree, RequestEntry};
@@ -32,6 +32,19 @@ pub enum Overlay {
     EnvironmentPicker,
     History,
     ConfirmDiscard(ConfirmDiscardKind),
+    Prompt(PromptKind),
+    ConfirmDelete(PathBuf),
+}
+
+/// A single text-field prompt, rendered by `components::prompt_modal`. The
+/// entered text lives in `AppState::overlay_query` — same field the command
+/// palette/quick open already use for their search query, since a prompt is
+/// just a single-field text overlay by another name.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum PromptKind {
+    New { dir: String },
+    Rename { path: PathBuf },
+    Duplicate { path: PathBuf },
 }
 
 /// `CloseTab` offers Save (one unambiguous file); `SwitchCollection` only
@@ -88,6 +101,7 @@ pub struct AppState {
 
     pub overlay_query: String,
     pub overlay_selected: usize,
+    pub overlay_error: Option<String>,
 }
 
 impl AppState {
@@ -107,6 +121,7 @@ impl AppState {
             editor_buffers: HashMap::new(),
             overlay_query: String::new(),
             overlay_selected: 0,
+            overlay_error: None,
         };
         state.open_collection_at(cwd);
         state.view = View::Home;
@@ -287,11 +302,45 @@ impl AppState {
         self.overlay = Some(overlay);
         self.overlay_query.clear();
         self.overlay_selected = 0;
+        self.overlay_error = None;
     }
 
     pub fn close_overlay(&mut self) {
         self.overlay = None;
         self.overlay_query.clear();
         self.overlay_selected = 0;
+        self.overlay_error = None;
+    }
+
+    /// Reloads the sidebar's `CollectionTree` after a request CRUD operation,
+    /// without touching open tabs/buffers/active file the way
+    /// `open_collection_at` does.
+    pub fn refresh_collection(&mut self) {
+        self.collection = collection::load(&self.cwd).map_err(|err| err.to_string());
+    }
+
+    /// Points the tab (and any activity/buffer) that held `old` at `new_path`
+    /// instead, preserving which tab is active.
+    pub fn replace_request_tab(&mut self, old: &Path, new_path: PathBuf) {
+        let old_file = ActiveFile::Request(old.to_path_buf());
+        let new_file = ActiveFile::Request(new_path);
+
+        if let Some(slot) = self.open_tabs.iter_mut().find(|f| **f == old_file) {
+            *slot = new_file.clone();
+        }
+        self.editor_buffers.remove(&old_file);
+        if let Some(activity) = self.activity.remove(&old_file) {
+            self.activity.insert(new_file.clone(), activity);
+        }
+        if self.active_file == old_file {
+            self.active_file = new_file.clone();
+        }
+        self.ensure_buffer(&new_file);
+    }
+
+    /// Closes the tab for `path` if it's open — used after a delete, where
+    /// there's no file left to prompt "unsaved changes" about.
+    pub fn close_request_tab_if_open(&mut self, path: &Path) {
+        self.close_tab(&ActiveFile::Request(path.to_path_buf()));
     }
 }

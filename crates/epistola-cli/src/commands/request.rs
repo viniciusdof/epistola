@@ -1,9 +1,12 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use epistola_engine::discovery::discover_collection;
-use epistola_engine::requests::{find_request_files, lint_collection, slugify};
+use epistola_engine::requests::{
+    create_request, delete_request, duplicate_request, find_request_files, lint_collection,
+    rename_request,
+};
 use epistola_engine::resolve::load_and_resolve;
 use epistola_engine::EngineError;
 use epistola_format::RequestFile;
@@ -113,18 +116,7 @@ pub fn run(args: RequestArgs, cwd: &Path) -> Result<()> {
 }
 
 fn new(args: NewArgs, cwd: &Path) -> Result<()> {
-    let collection = discover_collection(cwd)?;
-
-    let dir = if args.dir.is_empty() {
-        collection.root.clone()
-    } else {
-        collection.root.join(&args.dir)
-    };
-    let path = dir.join(format!("{}.req.toml", slugify(&args.name)));
-
-    RequestFile::create(&path, &args.name, &args.method, &args.url)
-        .with_context(|| format!("failed to create '{}'", path.display()))?;
-
+    let path = create_request(cwd, &args.dir, &args.name, &args.method, &args.url)?;
     println!("Created {}", path.display());
     Ok(())
 }
@@ -254,54 +246,19 @@ fn lint(args: LintArgs, cwd: &Path) -> Result<()> {
 }
 
 fn delete(args: DeleteArgs) -> Result<()> {
-    if !args.path.is_file() {
-        bail!("'{}' does not exist", args.path.display());
-    }
-    std::fs::remove_file(&args.path)
-        .with_context(|| format!("failed to delete '{}'", args.path.display()))?;
+    delete_request(&args.path)?;
     println!("Deleted {}", args.path.display());
     Ok(())
 }
 
 fn rename(args: RenameArgs) -> Result<()> {
-    let mut file = RequestFile::load(&args.path)
-        .with_context(|| format!("failed to load '{}'", args.path.display()))?;
-    file.request.name = args.name.clone();
-
-    let dir = args
-        .path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
-    let new_path = dir.join(format!("{}.req.toml", slugify(&args.name)));
-
-    if new_path == args.path {
-        file.save_at(&args.path)
-            .with_context(|| format!("failed to save '{}'", args.path.display()))?;
-    } else {
-        file.create_at(&new_path)
-            .with_context(|| format!("failed to create '{}'", new_path.display()))?;
-        std::fs::remove_file(&args.path)
-            .with_context(|| format!("failed to remove '{}'", args.path.display()))?;
-    }
-
+    let new_path = rename_request(&args.path, &args.name)?;
     println!("Renamed {} to {}", args.path.display(), new_path.display());
     Ok(())
 }
 
 fn duplicate(args: DuplicateArgs) -> Result<()> {
-    let mut file = RequestFile::load(&args.path)
-        .with_context(|| format!("failed to load '{}'", args.path.display()))?;
-    file.request.name = args.name.clone();
-
-    let dir = args
-        .path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
-    let new_path = dir.join(format!("{}.req.toml", slugify(&args.name)));
-
-    file.create_at(&new_path)
-        .with_context(|| format!("failed to create '{}'", new_path.display()))?;
-
+    let new_path = duplicate_request(&args.path, &args.name)?;
     println!(
         "Duplicated {} to {}",
         args.path.display(),

@@ -22,6 +22,7 @@ use crate::components::kit::MethodTag;
 use crate::components::palette::{
     filter_items, render_palette_overlay, PaletteItem, SelectHandler,
 };
+use crate::components::prompt_modal::render_prompt_modal;
 use crate::components::sidebar::SidebarCallbacks;
 use crate::components::tab_strip::TabStripCallbacks;
 use crate::components::titlebar::TitlebarCallbacks;
@@ -31,7 +32,8 @@ use crate::components::{
 use crate::editor_save;
 use crate::execution;
 use crate::state::{
-    ActiveFile, ActivityResult, AppState, ConfirmDiscardKind, Overlay, ResponseSubTab, View,
+    ActiveFile, ActivityResult, AppState, ConfirmDiscardKind, Overlay, PromptKind, ResponseSubTab,
+    View,
 };
 use crate::theme::Theme;
 
@@ -178,6 +180,118 @@ impl EpistolaGui {
         cx.notify();
     }
 
+    /// Relative to the collection root: the directory of the request or
+    /// folder currently open, or the root itself if neither is open.
+    fn default_new_request_dir(&self) -> String {
+        let Ok(collection) = self.state.collection.as_ref() else {
+            return String::new();
+        };
+        let dir = match &self.state.active_file {
+            ActiveFile::Request(path) => path.parent().map(|p| p.to_path_buf()),
+            ActiveFile::Folder(dir) => Some(dir.clone()),
+            _ => None,
+        };
+        dir.and_then(|d| {
+            d.strip_prefix(&collection.root)
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default()
+    }
+
+    fn start_new_request_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dir = self.default_new_request_dir();
+        self.open_overlay(Overlay::Prompt(PromptKind::New { dir }), window, cx);
+    }
+
+    fn start_rename_request_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((path, name)) = self
+            .state
+            .active_request()
+            .map(|r| (r.abs_path.clone(), r.display_name.clone()))
+        else {
+            return;
+        };
+        self.open_overlay(Overlay::Prompt(PromptKind::Rename { path }), window, cx);
+        self.state.overlay_query = name;
+    }
+
+    fn start_duplicate_request_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((path, suggested)) = self
+            .state
+            .active_request()
+            .map(|r| (r.abs_path.clone(), format!("{} copy", r.display_name)))
+        else {
+            return;
+        };
+        self.open_overlay(Overlay::Prompt(PromptKind::Duplicate { path }), window, cx);
+        self.state.overlay_query = suggested;
+    }
+
+    fn start_delete_request_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.state.active_request().map(|r| r.abs_path.clone()) else {
+            return;
+        };
+        self.open_overlay(Overlay::ConfirmDelete(path), window, cx);
+    }
+
+    fn submit_prompt(&mut self, kind: PromptKind, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.state.overlay_query.trim().to_string();
+        if name.is_empty() {
+            self.state.overlay_error = Some("Name can't be empty".to_string());
+            cx.notify();
+            return;
+        }
+
+        let result = match &kind {
+            PromptKind::New { dir } => {
+                epistola_engine::requests::create_request(&self.state.cwd, dir, &name, "GET", "")
+            }
+            PromptKind::Rename { path } => epistola_engine::requests::rename_request(path, &name),
+            PromptKind::Duplicate { path } => {
+                epistola_engine::requests::duplicate_request(path, &name)
+            }
+        };
+
+        match result {
+            Ok(new_path) => {
+                self.state.refresh_collection();
+                match &kind {
+                    PromptKind::New { .. } | PromptKind::Duplicate { .. } => {
+                        self.state.open_request(new_path);
+                    }
+                    PromptKind::Rename { path } => {
+                        self.state.replace_request_tab(path, new_path);
+                    }
+                }
+                self.close_overlay(window, cx);
+            }
+            Err(err) => {
+                self.state.overlay_error = Some(err.to_string());
+                cx.notify();
+            }
+        }
+    }
+
+    fn confirm_delete_request(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match epistola_engine::requests::delete_request(&path) {
+            Ok(()) => {
+                self.state.refresh_collection();
+                self.state.close_request_tab_if_open(&path);
+                self.close_overlay(window, cx);
+            }
+            Err(err) => {
+                self.state.overlay_error = Some(err.to_string());
+                cx.notify();
+            }
+        }
+    }
+
     fn dismiss_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.state.overlay.is_some() {
             self.close_overlay(window, cx);
@@ -221,7 +335,10 @@ impl EpistolaGui {
                         .len()
                 })
                 .unwrap_or(0),
-            Some(Overlay::ConfirmDiscard(_)) | None => 0,
+            Some(Overlay::ConfirmDiscard(_))
+            | Some(Overlay::Prompt(_))
+            | Some(Overlay::ConfirmDelete(_))
+            | None => 0,
         }
     }
 
@@ -261,6 +378,8 @@ impl EpistolaGui {
                     self.close_overlay(window, cx);
                 }
             }
+            Overlay::Prompt(kind) => self.submit_prompt(kind, window, cx),
+            Overlay::ConfirmDelete(path) => self.confirm_delete_request(path, window, cx),
             Overlay::History | Overlay::ConfirmDiscard(_) => {}
         }
     }
@@ -276,7 +395,7 @@ impl EpistolaGui {
         }
         let has_query = matches!(
             self.state.overlay,
-            Some(Overlay::CommandPalette) | Some(Overlay::QuickOpen)
+            Some(Overlay::CommandPalette) | Some(Overlay::QuickOpen) | Some(Overlay::Prompt(_))
         );
         match event.keystroke.key.as_str() {
             "down" => self.move_overlay_selection(1, cx),
@@ -312,6 +431,18 @@ fn make_action(
             window.focus(&this.editor_focus_handle, cx);
             cx.notify();
         });
+    })
+}
+
+/// Like `make_action`, but for palette items that hand off to another
+/// overlay (a prompt or confirmation) instead of finishing the interaction —
+/// it must not close that follow-up overlay the way `make_action` would.
+fn make_prompt_action(
+    weak: WeakEntity<EpistolaGui>,
+    f: impl Fn(&mut EpistolaGui, &mut Window, &mut Context<EpistolaGui>) + 'static,
+) -> SelectHandler {
+    Rc::new(move |window, cx| {
+        let _ = weak.update(cx, |this, cx| f(this, window, cx));
     })
 }
 
@@ -372,9 +503,37 @@ fn command_palette_items(weak: WeakEntity<EpistolaGui>, state: &AppState) -> Vec
             )
             .shortcut("⌘⇧R"),
         );
+
+        items.push(PaletteItem::new(
+            "Rename Request",
+            make_prompt_action(weak.clone(), |this, window, cx| {
+                this.start_rename_request_prompt(window, cx)
+            }),
+        ));
+
+        items.push(PaletteItem::new(
+            "Duplicate Request",
+            make_prompt_action(weak.clone(), |this, window, cx| {
+                this.start_duplicate_request_prompt(window, cx)
+            }),
+        ));
+
+        items.push(PaletteItem::new(
+            "Delete Request",
+            make_prompt_action(weak.clone(), |this, window, cx| {
+                this.start_delete_request_confirm(window, cx)
+            }),
+        ));
     }
 
     if state.collection.is_ok() {
+        items.push(PaletteItem::new(
+            "New Request",
+            make_prompt_action(weak.clone(), |this, window, cx| {
+                this.start_new_request_prompt(window, cx)
+            }),
+        ));
+
         items.push(
             PaletteItem::new(
                 "Lint collection",
@@ -838,6 +997,90 @@ impl Render for EpistolaGui {
                     };
                     el.child(confirm_discard::render_confirm_discard(
                         &message, on_save, on_discard, on_cancel, theme,
+                    ))
+                }
+                Overlay::Prompt(kind) => {
+                    let title = match &kind {
+                        PromptKind::New { .. } => "New Request",
+                        PromptKind::Rename { .. } => "Rename Request",
+                        PromptKind::Duplicate { .. } => "Duplicate Request",
+                    };
+                    let confirm_label = match &kind {
+                        PromptKind::New { .. } => "Create",
+                        PromptKind::Rename { .. } => "Rename",
+                        PromptKind::Duplicate { .. } => "Duplicate",
+                    };
+                    let on_confirm: ClickHandler = {
+                        let weak = weak.clone();
+                        let kind = kind.clone();
+                        Rc::new(
+                            move |_event: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.submit_prompt(kind.clone(), window, cx);
+                                });
+                            },
+                        )
+                    };
+                    let on_cancel: ClickHandler = {
+                        let weak = weak.clone();
+                        Rc::new(
+                            move |_event: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.close_overlay(window, cx);
+                                });
+                            },
+                        )
+                    };
+                    el.child(render_prompt_modal(
+                        title,
+                        "Request name…",
+                        &self.state.overlay_query,
+                        self.state.overlay_error.as_deref(),
+                        confirm_label,
+                        theme,
+                        &self.overlay_focus_handle,
+                        on_confirm,
+                        on_cancel,
+                    ))
+                }
+                Overlay::ConfirmDelete(path) => {
+                    let name = self
+                        .state
+                        .collection
+                        .as_ref()
+                        .ok()
+                        .and_then(|c| c.find_request(&path))
+                        .map(|r| r.display_name.clone())
+                        .unwrap_or_else(|| path.display().to_string());
+                    let message = format!("Delete request \"{name}\"? This can't be undone.");
+                    let on_confirm: ClickHandler = {
+                        let weak = weak.clone();
+                        let path = path.clone();
+                        Rc::new(
+                            move |_event: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.confirm_delete_request(path.clone(), window, cx);
+                                });
+                            },
+                        )
+                    };
+                    let on_cancel: ClickHandler = {
+                        let weak = weak.clone();
+                        Rc::new(
+                            move |_event: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.close_overlay(window, cx);
+                                });
+                            },
+                        )
+                    };
+                    el.child(confirm_discard::render_confirm_delete(
+                        "Delete request",
+                        &message,
+                        self.state.overlay_error.as_deref(),
+                        on_confirm,
+                        on_cancel,
+                        theme,
                     ))
                 }
             })
