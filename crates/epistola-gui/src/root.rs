@@ -10,6 +10,10 @@ use gpui::{
     WeakEntity, Window,
 };
 
+use crate::actions::{
+    CycleEnvironment, Dismiss, GoHome, LintCollection, OpenCollection, OpenSettings,
+    RunActiveRequest, ShowResolvedRequest, ToggleCommandPalette, ToggleQuickOpen,
+};
 use crate::components::confirm_discard::{self, ClickHandler};
 use crate::components::editor_text::EditorLayout;
 use crate::components::env_popover;
@@ -52,6 +56,121 @@ impl EpistolaGui {
 impl Focusable for EpistolaGui {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.editor_focus_handle.clone()
+    }
+}
+
+impl EpistolaGui {
+    fn toggle_command_palette(&mut self, cx: &mut Context<Self>) {
+        self.state.overlay = if self.state.overlay == Some(Overlay::CommandPalette) {
+            None
+        } else {
+            Some(Overlay::CommandPalette)
+        };
+        cx.notify();
+    }
+
+    fn toggle_quick_open(&mut self, cx: &mut Context<Self>) {
+        self.state.overlay = if self.state.overlay == Some(Overlay::QuickOpen) {
+            None
+        } else {
+            Some(Overlay::QuickOpen)
+        };
+        cx.notify();
+    }
+
+    fn open_environment_picker(&mut self, cx: &mut Context<Self>) {
+        self.state.overlay = Some(Overlay::EnvironmentPicker);
+        cx.notify();
+    }
+
+    fn open_history(&mut self, cx: &mut Context<Self>) {
+        self.state.overlay = Some(Overlay::History);
+        cx.notify();
+    }
+
+    fn open_settings(&mut self, cx: &mut Context<Self>) {
+        self.state.open_config();
+        cx.notify();
+    }
+
+    fn go_home(&mut self, cx: &mut Context<Self>) {
+        self.state.view = View::Home;
+        cx.notify();
+    }
+
+    fn go_workspace(&mut self, cx: &mut Context<Self>) {
+        self.state.view = View::Workspace;
+        cx.notify();
+    }
+
+    fn run_active_request(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.state.active_request().map(|r| r.abs_path.clone()) else {
+            return;
+        };
+        execution::spawn_run(path, self.state.environment.clone(), cx);
+    }
+
+    fn show_resolved_request(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.state.active_request().map(|r| r.abs_path.clone()) else {
+            return;
+        };
+        let tab = self.state.active_file.clone();
+        let outcome = epistola_engine::run::resolve_saved_request(
+            &path,
+            self.state.environment.as_deref(),
+            Default::default(),
+        );
+        let activity = match outcome {
+            Ok((_collection, resolved)) => {
+                ActivityResult::Resolved(format_resolved_request(&resolved.request))
+            }
+            Err(engine_err) => match execution::classify_engine_error(engine_err) {
+                ActivityResult::UnresolvedVariable { variable } => {
+                    ActivityResult::UnresolvedVariable { variable }
+                }
+                ActivityResult::RunFailed(message) => ActivityResult::ResolvedFailed(message),
+                other => other,
+            },
+        };
+        self.state.activity.insert(tab, activity);
+        cx.notify();
+    }
+
+    fn lint_collection(&mut self, cx: &mut Context<Self>) {
+        if self.state.collection.is_err() {
+            return;
+        }
+        let tab = self.state.active_file.clone();
+        let result = epistola_engine::discovery::discover_collection(&self.state.cwd)
+            .and_then(|collection| {
+                epistola_engine::requests::lint_collection(
+                    &collection,
+                    self.state.environment.as_deref(),
+                )
+            })
+            .map(|report| format_lint_report(&report))
+            .map_err(|err| err.to_string());
+        let activity = match result {
+            Ok(text) => ActivityResult::Linted(text),
+            Err(err) => ActivityResult::LintFailed(err),
+        };
+        self.state.activity.insert(tab, activity);
+        cx.notify();
+    }
+
+    fn cycle_environment_action(&mut self, cx: &mut Context<Self>) {
+        if self.state.collection.is_err() {
+            return;
+        }
+        self.state.cycle_environment();
+        cx.notify();
+    }
+
+    fn dismiss_overlay(&mut self, cx: &mut Context<Self>) {
+        if self.state.overlay.is_some() {
+            self.state.overlay = None;
+            cx.notify();
+        }
     }
 }
 
@@ -108,76 +227,30 @@ fn format_lint_report(report: &epistola_engine::requests::LintReport) -> String 
 
 fn command_palette_items(weak: WeakEntity<EpistolaGui>, state: &AppState) -> Vec<PaletteItem> {
     let mut items = Vec::new();
-    let active_tab = state.active_file.clone();
 
-    if let Some(path) = state.active_request().map(|r| r.abs_path.clone()) {
+    if state.active_request().is_some() {
         items.push(
             PaletteItem::new(
                 "Run request",
-                make_action(weak.clone(), move |this, cx| {
-                    execution::spawn_run(path.clone(), this.state.environment.clone(), cx);
-                }),
+                make_action(weak.clone(), |this, cx| this.run_active_request(cx)),
             )
             .shortcut("⌘⏎"),
         );
 
-        let resolve_path = state.active_request().map(|r| r.abs_path.clone());
-        let resolve_tab = active_tab.clone();
         items.push(
             PaletteItem::new(
                 "Show resolved request",
-                make_action(weak.clone(), move |this, _cx| {
-                    let Some(path) = resolve_path.clone() else {
-                        return;
-                    };
-                    let outcome = epistola_engine::run::resolve_saved_request(
-                        &path,
-                        this.state.environment.as_deref(),
-                        Default::default(),
-                    );
-                    let activity = match outcome {
-                        Ok((_collection, resolved)) => {
-                            ActivityResult::Resolved(format_resolved_request(&resolved.request))
-                        }
-
-                        Err(engine_err) => match execution::classify_engine_error(engine_err) {
-                            ActivityResult::UnresolvedVariable { variable } => {
-                                ActivityResult::UnresolvedVariable { variable }
-                            }
-                            ActivityResult::RunFailed(message) => {
-                                ActivityResult::ResolvedFailed(message)
-                            }
-                            other => other,
-                        },
-                    };
-                    this.state.activity.insert(resolve_tab.clone(), activity);
-                }),
+                make_action(weak.clone(), |this, cx| this.show_resolved_request(cx)),
             )
             .shortcut("⌘⇧R"),
         );
     }
 
     if state.collection.is_ok() {
-        let lint_tab = active_tab.clone();
         items.push(
             PaletteItem::new(
                 "Lint collection",
-                make_action(weak.clone(), move |this, _cx| {
-                    let result = epistola_engine::discovery::discover_collection(&this.state.cwd)
-                        .and_then(|collection| {
-                            epistola_engine::requests::lint_collection(
-                                &collection,
-                                this.state.environment.as_deref(),
-                            )
-                        })
-                        .map(|report| format_lint_report(&report))
-                        .map_err(|err| err.to_string());
-                    let activity = match result {
-                        Ok(text) => ActivityResult::Linted(text),
-                        Err(err) => ActivityResult::LintFailed(err),
-                    };
-                    this.state.activity.insert(lint_tab.clone(), activity);
-                }),
+                make_action(weak.clone(), |this, cx| this.lint_collection(cx)),
             )
             .shortcut("⌘⇧L"),
         );
@@ -185,7 +258,7 @@ fn command_palette_items(weak: WeakEntity<EpistolaGui>, state: &AppState) -> Vec
         items.push(
             PaletteItem::new(
                 "Switch environment",
-                make_action(weak.clone(), |this, _cx| this.state.cycle_environment()),
+                make_action(weak.clone(), |this, cx| this.cycle_environment_action(cx)),
             )
             .shortcut("⌘E"),
         );
@@ -194,7 +267,7 @@ fn command_palette_items(weak: WeakEntity<EpistolaGui>, state: &AppState) -> Vec
     items.push(
         PaletteItem::new(
             "Open settings",
-            make_action(weak.clone(), |this, _cx| this.state.open_config()),
+            make_action(weak.clone(), |this, cx| this.open_settings(cx)),
         )
         .shortcut("⌘,"),
     );
@@ -227,46 +300,37 @@ fn quick_open_items(
 }
 
 impl Render for EpistolaGui {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.theme;
         let weak = cx.entity().downgrade();
+        let is_fullscreen = window.is_fullscreen();
 
         let rail_callbacks = activity_rail::RailCallbacks {
-            on_home: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                this.state.view = View::Home;
-                cx.notify();
-            })),
-            on_workspace: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                this.state.view = View::Workspace;
-                cx.notify();
-            })),
-            on_environments: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                this.state.overlay = Some(Overlay::EnvironmentPicker);
-                cx.notify();
-            })),
-            on_history: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                this.state.overlay = Some(Overlay::History);
-                cx.notify();
-            })),
-            on_settings: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                this.state.open_config();
-                cx.notify();
-            })),
+            on_home: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| this.go_home(cx))),
+            on_workspace: Box::new(
+                cx.listener(|this, _: &ClickEvent, _window, cx| this.go_workspace(cx)),
+            ),
+            on_environments: Box::new(
+                cx.listener(|this, _: &ClickEvent, _window, cx| this.open_environment_picker(cx)),
+            ),
+            on_history: Box::new(
+                cx.listener(|this, _: &ClickEvent, _window, cx| this.open_history(cx)),
+            ),
+            on_settings: Box::new(
+                cx.listener(|this, _: &ClickEvent, _window, cx| this.open_settings(cx)),
+            ),
         };
 
         let titlebar_callbacks = TitlebarCallbacks {
-            on_quick_open: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                this.state.overlay = Some(Overlay::QuickOpen);
-                cx.notify();
-            })),
-            on_command_palette: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                this.state.overlay = Some(Overlay::CommandPalette);
-                cx.notify();
-            })),
-            on_open_env_picker: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| {
-                this.state.overlay = Some(Overlay::EnvironmentPicker);
-                cx.notify();
-            })),
+            on_quick_open: Box::new(
+                cx.listener(|this, _: &ClickEvent, _window, cx| this.toggle_quick_open(cx)),
+            ),
+            on_command_palette: Box::new(
+                cx.listener(|this, _: &ClickEvent, _window, cx| this.toggle_command_palette(cx)),
+            ),
+            on_open_env_picker: Box::new(
+                cx.listener(|this, _: &ClickEvent, _window, cx| this.open_environment_picker(cx)),
+            ),
         };
 
         let sidebar_callbacks = SidebarCallbacks {
@@ -418,9 +482,34 @@ impl Render for EpistolaGui {
             .size_full()
             .bg(theme.ink)
             .text_color(theme.text)
+            .on_action(cx.listener(|this, _: &ToggleCommandPalette, _window, cx| {
+                this.toggle_command_palette(cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &ToggleQuickOpen, _window, cx| this.toggle_quick_open(cx)),
+            )
+            .on_action(cx.listener(|this, _: &OpenSettings, _window, cx| this.open_settings(cx)))
+            .on_action(cx.listener(|this, _: &GoHome, _window, cx| this.go_home(cx)))
+            .on_action(
+                cx.listener(|this, _: &RunActiveRequest, _window, cx| this.run_active_request(cx)),
+            )
+            .on_action(cx.listener(|this, _: &ShowResolvedRequest, _window, cx| {
+                this.show_resolved_request(cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &LintCollection, _window, cx| this.lint_collection(cx)),
+            )
+            .on_action(cx.listener(|this, _: &CycleEnvironment, _window, cx| {
+                this.cycle_environment_action(cx)
+            }))
+            .on_action(cx.listener(|_this, _: &OpenCollection, _window, cx| {
+                crate::actions::spawn_open_collection(cx)
+            }))
+            .on_action(cx.listener(|this, _: &Dismiss, _window, cx| this.dismiss_overlay(cx)))
             .child(titlebar::render_titlebar(
                 &self.state,
                 theme,
+                is_fullscreen,
                 titlebar_callbacks,
             ))
             .child(
@@ -433,7 +522,7 @@ impl Render for EpistolaGui {
                         theme,
                         rail_callbacks,
                     ))
-                    .child(div().flex_1().min_w(px(0.)).child(viewport)),
+                    .child(div().flex().flex_1().min_w(px(0.)).child(viewport)),
             )
             .when(show_drawer, |el| {
                 el.child(response_drawer::render_response_drawer(

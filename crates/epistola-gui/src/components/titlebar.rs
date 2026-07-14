@@ -88,6 +88,7 @@ pub struct TitlebarCallbacks {
 pub fn render_titlebar(
     state: &AppState,
     theme: Theme,
+    is_fullscreen: bool,
     callbacks: TitlebarCallbacks,
 ) -> impl IntoElement {
     let env_pill = match &state.environment {
@@ -105,7 +106,7 @@ pub fn render_titlebar(
         .items_center()
         .gap(px(10.))
         .h(px(40.))
-        .pl(px(78.))
+        .pl(if is_fullscreen { px(14.) } else { px(78.) })
         .pr(px(14.))
         .border_b_1()
         .border_color(theme.border)

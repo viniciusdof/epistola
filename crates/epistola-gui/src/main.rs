@@ -19,8 +19,10 @@ use gpui::{
 };
 
 use actions::{
-    Backspace, Copy, Cut, Delete, End, Home, InsertNewline, MoveDown, MoveLeft, MoveRight, MoveUp,
-    Paste, Save, SelectAll, SelectDown, SelectLeft, SelectRight, SelectUp,
+    Backspace, Copy, Cut, CycleEnvironment, Delete, Dismiss, End, GoHome, Home, InsertNewline,
+    LintCollection, MoveDown, MoveLeft, MoveRight, MoveUp, OpenCollection, OpenSettings, Paste,
+    RunActiveRequest, Save, SelectAll, SelectDown, SelectLeft, SelectRight, SelectUp,
+    ShowResolvedRequest, ToggleCommandPalette, ToggleQuickOpen,
 };
 use assets::Assets;
 use root::EpistolaGui;
@@ -58,6 +60,16 @@ fn main() {
                 KeyBinding::new("cmd-c", Copy, Some("Editor")),
                 KeyBinding::new("cmd-x", Cut, Some("Editor")),
                 KeyBinding::new("cmd-s", Save, Some("Editor")),
+                KeyBinding::new("cmd-k", ToggleCommandPalette, None),
+                KeyBinding::new("cmd-p", ToggleQuickOpen, None),
+                KeyBinding::new("cmd-,", OpenSettings, None),
+                KeyBinding::new("cmd-0", GoHome, None),
+                KeyBinding::new("cmd-enter", RunActiveRequest, None),
+                KeyBinding::new("cmd-shift-r", ShowResolvedRequest, None),
+                KeyBinding::new("cmd-shift-l", LintCollection, None),
+                KeyBinding::new("cmd-e", CycleEnvironment, None),
+                KeyBinding::new("cmd-o", OpenCollection, None),
+                KeyBinding::new("escape", Dismiss, None),
             ]);
 
             let bounds = Bounds::centered(None, size(px(1080.0), px(700.0)), cx);

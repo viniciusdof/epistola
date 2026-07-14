@@ -27,6 +27,22 @@ actions!(
     ]
 );
 
+actions!(
+    app,
+    [
+        ToggleCommandPalette,
+        ToggleQuickOpen,
+        OpenSettings,
+        GoHome,
+        RunActiveRequest,
+        ShowResolvedRequest,
+        LintCollection,
+        CycleEnvironment,
+        OpenCollection,
+        Dismiss,
+    ]
+);
+
 fn folder_prompt(prompt: &str) -> PathPromptOptions {
     PathPromptOptions {
         files: false,
