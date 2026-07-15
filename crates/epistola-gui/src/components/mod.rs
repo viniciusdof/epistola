@@ -1,5 +1,4 @@
 pub mod activity_rail;
-pub mod confirm_discard;
 pub mod editor;
 pub mod editor_text;
 pub mod env_popover;

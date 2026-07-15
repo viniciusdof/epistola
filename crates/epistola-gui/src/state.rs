@@ -50,9 +50,7 @@ pub enum Overlay {
     QuickOpen,
     EnvironmentPicker,
     History,
-    ConfirmDiscard(ConfirmDiscardKind),
     Prompt(PromptKind),
-    ConfirmDelete(PathBuf),
 }
 
 /// A single text-field prompt, rendered by `components::prompt_modal`. The
@@ -64,14 +62,6 @@ pub enum PromptKind {
     New { dir: String },
     Rename { path: PathBuf },
     Duplicate { path: PathBuf },
-}
-
-/// `CloseTab` offers Save (one unambiguous file); `SwitchCollection` only
-/// offers Discard (possibly many dirty tabs, no single file to save).
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum ConfirmDiscardKind {
-    CloseTab(ActiveFile),
-    SwitchCollection(PathBuf),
 }
 
 #[derive(Clone, Debug)]

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use gpui::{
     div, prelude::*, px, App, ClickEvent, Context, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, Render, Window,
+    KeyDownEvent, PromptLevel, Render, Window,
 };
 use nucleo_matcher::{Config, Matcher};
 
@@ -16,7 +16,6 @@ use crate::actions::{
     OpenSettings, RenameRequest, RunActiveRequest, SelectEnvironment, SelectResponseSubtab,
     ShowResolvedRequest, SwitchTab, ToggleCommandPalette, ToggleQuickOpen,
 };
-use crate::components::confirm_discard;
 use crate::components::editor_text::EditorLayout;
 use crate::components::env_popover;
 use crate::components::history_modal;
@@ -27,9 +26,7 @@ use crate::components::{
 };
 use crate::editor_save;
 use crate::execution;
-use crate::state::{
-    ActiveFile, ActivityResult, AppState, ConfirmDiscardKind, Overlay, PromptKind, View,
-};
+use crate::state::{ActiveFile, ActivityResult, AppState, Overlay, PromptKind, View};
 use crate::theme::Theme;
 
 pub struct EpistolaGui {
@@ -250,7 +247,47 @@ impl EpistolaGui {
         let Some(path) = self.state.active_request().map(|r| r.abs_path.clone()) else {
             return;
         };
-        self.open_overlay(Overlay::ConfirmDelete(path), window, cx);
+        self.delete_request_with_confirm(path, window, cx);
+    }
+
+    pub(crate) fn delete_request_with_confirm(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = self
+            .state
+            .collection
+            .as_ref()
+            .ok()
+            .and_then(|c| c.find_request(&path))
+            .map(|r| r.display_name.clone())
+            .unwrap_or_else(|| path.display().to_string());
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!("Delete request \"{name}\"?"),
+            Some("This can't be undone."),
+            &["Delete", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |weak, cx| {
+            if let Ok(0) = answer.await {
+                let _ = weak.update(cx, |this, cx| {
+                    match epistola_engine::requests::delete_request(&path) {
+                        Ok(()) => {
+                            this.state.refresh_collection();
+                            this.state.close_request_tab_if_open(&path);
+                        }
+                        Err(err) => {
+                            this.state.collection_action_error = Some(err.to_string());
+                        }
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     fn submit_prompt(&mut self, kind: PromptKind, window: &mut Window, cx: &mut Context<Self>) {
@@ -291,49 +328,78 @@ impl EpistolaGui {
         }
     }
 
-    fn confirm_delete_request(
-        &mut self,
-        path: PathBuf,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match epistola_engine::requests::delete_request(&path) {
-            Ok(()) => {
-                self.state.refresh_collection();
-                self.state.close_request_tab_if_open(&path);
-                self.close_overlay(window, cx);
-            }
-            Err(err) => {
-                self.state.overlay_error = Some(err.to_string());
-                cx.notify();
-            }
-        }
-    }
-
     fn dismiss_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.state.overlay.is_some() {
             self.close_overlay(window, cx);
         }
     }
 
-    fn open_recent_collection(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if self.state.has_unsaved_changes() {
-            self.state.overlay = Some(Overlay::ConfirmDiscard(
-                ConfirmDiscardKind::SwitchCollection(path),
-            ));
-        } else {
+    pub(crate) fn switch_collection_with_confirm(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.state.has_unsaved_changes() {
             self.state.open_collection_at(path);
+            cx.notify();
+            return;
         }
-        cx.notify();
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "This collection has unsaved changes in one or more tabs.",
+            Some("Discard them and switch anyway?"),
+            &["Discard", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |weak, cx| {
+            if let Ok(0) = answer.await {
+                let _ = weak.update(cx, |this, cx| {
+                    this.state.open_collection_at(path);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
-    fn close_tab_action(&mut self, file: ActiveFile, cx: &mut Context<Self>) {
-        if self.state.is_dirty(&file) {
-            self.state.overlay = Some(Overlay::ConfirmDiscard(ConfirmDiscardKind::CloseTab(file)));
-        } else {
+    fn close_tab_with_confirm(
+        &mut self,
+        file: ActiveFile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.state.is_dirty(&file) {
             self.state.close_tab(&file);
+            cx.notify();
+            return;
         }
-        cx.notify();
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "This tab has unsaved changes.",
+            Some("Save before closing?"),
+            &["Save", "Discard", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |weak, cx| match answer.await {
+            Ok(0) => {
+                let _ = weak.update(cx, |this, cx| {
+                    editor_save::validate_and_save(&mut this.state, &file);
+                    if !this.state.is_dirty(&file) {
+                        this.state.close_tab(&file);
+                    }
+                    cx.notify();
+                });
+            }
+            Ok(1) => {
+                let _ = weak.update(cx, |this, cx| {
+                    this.state.close_tab(&file);
+                    cx.notify();
+                });
+            }
+            _ => {}
+        })
+        .detach();
     }
 
     fn select_environment(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -351,10 +417,7 @@ impl EpistolaGui {
                 .map(|collection| collection.environments.len())
                 .unwrap_or(0),
             Some(Overlay::History) => self.state.history_entries.len(),
-            Some(Overlay::ConfirmDiscard(_))
-            | Some(Overlay::Prompt(_))
-            | Some(Overlay::ConfirmDelete(_))
-            | None => 0,
+            Some(Overlay::Prompt(_)) | None => 0,
         }
     }
 
@@ -407,8 +470,7 @@ impl EpistolaGui {
                 }
             }
             Overlay::Prompt(kind) => self.submit_prompt(kind, window, cx),
-            Overlay::ConfirmDelete(path) => self.confirm_delete_request(path, window, cx),
-            Overlay::History | Overlay::ConfirmDiscard(_) => {}
+            Overlay::History => {}
         }
     }
 
@@ -605,15 +667,15 @@ impl Render for EpistolaGui {
                 this.state.switch_tab(action.file.clone());
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, action: &CloseTab, _window, cx| {
-                this.close_tab_action(action.file.clone(), cx);
+            .on_action(cx.listener(|this, action: &CloseTab, window, cx| {
+                this.close_tab_with_confirm(action.file.clone(), window, cx);
             }))
             .on_action(cx.listener(|this, action: &SelectEnvironment, window, cx| {
                 this.select_environment(action.name.clone(), window, cx);
             }))
             .on_action(
-                cx.listener(|this, action: &OpenRecentCollection, _window, cx| {
-                    this.open_recent_collection(action.path.clone(), cx);
+                cx.listener(|this, action: &OpenRecentCollection, window, cx| {
+                    this.switch_collection_with_confirm(action.path.clone(), window, cx);
                 }),
             )
             .on_action(
@@ -707,52 +769,6 @@ impl Render for EpistolaGui {
                         on_dismiss,
                     ))
                 }
-                Overlay::ConfirmDiscard(kind) => {
-                    let (message, save_target): (String, Option<ActiveFile>) = match &kind {
-                        ConfirmDiscardKind::CloseTab(file) => (
-                            "This tab has unsaved changes. Save before closing?".to_string(),
-                            Some(file.clone()),
-                        ),
-                        ConfirmDiscardKind::SwitchCollection(_) => (
-                            "This collection has unsaved changes in one or more tabs. \
-                             Discard them and switch anyway?"
-                                .to_string(),
-                            None,
-                        ),
-                    };
-                    let on_save: Option<_> = save_target.map(|file| {
-                        Box::new(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
-                            editor_save::validate_and_save(&mut this.state, &file);
-                            if !this.state.is_dirty(&file) {
-                                this.state.close_tab(&file);
-                                this.state.overlay = None;
-                            }
-                            cx.notify();
-                        })) as crate::components::kit::ClickHandler
-                    });
-                    let kind_for_discard = kind.clone();
-                    let on_discard = cx.listener(move |this, _event: &ClickEvent, _window, cx| {
-                        match &kind_for_discard {
-                            ConfirmDiscardKind::CloseTab(file) => this.state.close_tab(file),
-                            ConfirmDiscardKind::SwitchCollection(path) => {
-                                this.state.open_collection_at(path.clone())
-                            }
-                        }
-                        this.state.overlay = None;
-                        cx.notify();
-                    });
-                    let on_dismiss = cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                        this.state.overlay = None;
-                        cx.notify();
-                    });
-                    let on_cancel = cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                        this.state.overlay = None;
-                        cx.notify();
-                    });
-                    el.child(confirm_discard::render_confirm_discard(
-                        &message, on_save, on_discard, on_dismiss, on_cancel, theme,
-                    ))
-                }
                 Overlay::Prompt(kind) => {
                     let title = match &kind {
                         PromptKind::New { .. } => "New Request",
@@ -785,38 +801,6 @@ impl Render for EpistolaGui {
                         on_confirm,
                         on_dismiss,
                         on_cancel,
-                    ))
-                }
-                Overlay::ConfirmDelete(path) => {
-                    let name = self
-                        .state
-                        .collection
-                        .as_ref()
-                        .ok()
-                        .and_then(|c| c.find_request(&path))
-                        .map(|r| r.display_name.clone())
-                        .unwrap_or_else(|| path.display().to_string());
-                    let message = format!("Delete request \"{name}\"? This can't be undone.");
-                    let path_for_confirm = path.clone();
-                    let on_confirm = cx.listener(move |this, _event: &ClickEvent, window, cx| {
-                        this.confirm_delete_request(path_for_confirm.clone(), window, cx);
-                    });
-                    let on_dismiss = cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                        this.state.overlay = None;
-                        cx.notify();
-                    });
-                    let on_cancel = cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                        this.state.overlay = None;
-                        cx.notify();
-                    });
-                    el.child(confirm_discard::render_confirm_delete(
-                        "Delete request",
-                        &message,
-                        self.state.overlay_error.as_deref(),
-                        on_confirm,
-                        on_dismiss,
-                        on_cancel,
-                        theme,
                     ))
                 }
             })

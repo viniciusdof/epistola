@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use gpui::{actions, Action, Context, PathPromptOptions};
 
 use crate::root::EpistolaGui;
-use crate::state::{ActiveFile, ConfirmDiscardKind, Overlay, ResponseSubTab};
+use crate::state::{ActiveFile, ResponseSubTab};
 
 actions!(
     editor,
@@ -123,15 +123,8 @@ pub fn spawn_open_collection(cx: &mut Context<EpistolaGui>) {
         let Some(path) = paths.pop() else {
             return;
         };
-        let _ = weak.update(cx, |this, cx| {
-            if this.state.has_unsaved_changes() {
-                this.state.overlay = Some(Overlay::ConfirmDiscard(
-                    ConfirmDiscardKind::SwitchCollection(path),
-                ));
-            } else {
-                this.state.open_collection_at(path);
-            }
-            cx.notify();
+        let _ = weak.update_in(cx, |this, window, cx| {
+            this.switch_collection_with_confirm(path, window, cx);
         });
     })
     .detach();
@@ -148,21 +141,19 @@ pub fn spawn_new_collection(cx: &mut Context<EpistolaGui>) {
             return;
         };
         let outcome = epistola_engine::init::init_collection(&path, None, None);
-        let _ = weak.update(cx, |this, cx| {
-            match outcome {
-                Ok(outcome) => {
-                    if this.state.has_unsaved_changes() {
-                        this.state.overlay = Some(Overlay::ConfirmDiscard(
-                            ConfirmDiscardKind::SwitchCollection(outcome.path),
-                        ));
-                    } else {
-                        this.state.open_collection_at(outcome.path);
-                    }
-                }
-                Err(err) => this.state.collection_action_error = Some(err.to_string()),
+        match outcome {
+            Ok(outcome) => {
+                let _ = weak.update_in(cx, |this, window, cx| {
+                    this.switch_collection_with_confirm(outcome.path, window, cx);
+                });
             }
-            cx.notify();
-        });
+            Err(err) => {
+                let _ = weak.update(cx, |this, cx| {
+                    this.state.collection_action_error = Some(err.to_string());
+                    cx.notify();
+                });
+            }
+        }
     })
     .detach();
 }
