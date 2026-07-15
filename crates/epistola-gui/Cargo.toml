@@ -1,6 +1,6 @@
 [package]
 name = "epistola-gui"
-description = "Prototype GPUI-based desktop client for epistola"
+description = "GPUI-based desktop client for epistola"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
