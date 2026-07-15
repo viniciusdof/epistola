@@ -2,17 +2,13 @@ use std::path::{Path, PathBuf};
 
 use gpui::{div, prelude::*, px, Context, FocusHandle, IntoElement, MouseButton};
 
+use crate::actions::RunActiveRequest;
 use crate::components::editor_text::EditorTextElement;
-use crate::components::kit::{icon, IconName, MethodTag, PathClickHandler};
-use crate::components::tab_strip::{self, TabStripCallbacks};
+use crate::components::kit::{dispatch_on_click, icon, IconName, MethodTag};
+use crate::components::tab_strip;
 use crate::root::EpistolaGui;
 use crate::state::{ActiveFile, ActivityResult, AppState};
 use crate::theme::Theme;
-
-pub struct EditorCallbacks {
-    pub tab_strip: TabStripCallbacks,
-    pub on_run: PathClickHandler,
-}
 
 #[derive(Clone, Copy)]
 pub(crate) enum TokenKind {
@@ -167,17 +163,10 @@ fn render_virtual_line(note: &str, theme: Theme) -> impl IntoElement {
         .child(format!("inherits Authorization from {note}"))
 }
 
-fn render_preview_row(
-    state: &AppState,
-    theme: Theme,
-    path: &Path,
-    on_run: &PathClickHandler,
-) -> impl IntoElement {
+fn render_preview_row(state: &AppState, theme: Theme, path: &Path) -> impl IntoElement {
     let request = state.active_request();
     let preview = state.url_previews.get(path);
     let running = matches!(state.active_activity(), ActivityResult::Running);
-    let run_path = path.to_path_buf();
-    let on_run = on_run.clone();
 
     div()
         .flex()
@@ -191,7 +180,7 @@ fn render_preview_row(
         .bg(theme.surface)
         .text_size(px(12.5))
         .when_some(request, |el, request| {
-            el.child(MethodTag::new(request.method.clone(), theme))
+            el.child(MethodTag::new(request.method.clone()))
         })
         .child(
             div()
@@ -240,7 +229,7 @@ fn render_preview_row(
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .when(!running, |el| {
                     el.cursor_pointer()
-                        .on_click(move |_event, window, cx| on_run(run_path.clone(), window, cx))
+                        .on_click(dispatch_on_click(RunActiveRequest))
                 })
                 .when(running, |el| {
                     el.child(icon(IconName::Loading, px(11.), theme.accent_ink))
@@ -264,11 +253,10 @@ fn render_save_error(message: &str, theme: Theme) -> impl IntoElement {
 
 pub fn render_editor(
     state: &AppState,
-    theme: Theme,
-    callbacks: EditorCallbacks,
     focus_handle: FocusHandle,
     cx: &mut Context<EpistolaGui>,
 ) -> impl IntoElement {
+    let theme = *cx.global::<Theme>();
     let buffer = state.active_buffer();
 
     let mut body = div()
@@ -346,13 +334,9 @@ pub fn render_editor(
         .flex_col()
         .flex_1()
         .min_w(px(0.))
-        .child(tab_strip::render_tab_strip(
-            state,
-            theme,
-            callbacks.tab_strip,
-        ))
+        .child(tab_strip::render_tab_strip(state, cx))
         .when_some(active_request_path, |el, path| {
-            el.child(render_preview_row(state, theme, &path, &callbacks.on_run))
+            el.child(render_preview_row(state, theme, &path))
         })
         .when_some(virtual_note, |el, note| {
             el.child(render_virtual_line(&note, theme))

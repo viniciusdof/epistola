@@ -1,6 +1,8 @@
-use gpui::{div, prelude::*, px, IntoElement, SharedString};
+use gpui::{div, prelude::*, px, Context, IntoElement, SharedString};
 
-use crate::components::kit::{dot_pill, ClickHandler, TitlebarButton};
+use crate::actions::{OpenEnvironmentPicker, ToggleCommandPalette, ToggleQuickOpen};
+use crate::components::kit::{dispatch_on_click, dot_pill, TitlebarButton};
+use crate::root::EpistolaGui;
 use crate::state::{ActiveFile, AppState, View};
 use crate::theme::Theme;
 
@@ -79,18 +81,12 @@ fn render_breadcrumb(state: &AppState, theme: Theme) -> impl IntoElement {
     div().flex().items_center().children(parts)
 }
 
-pub struct TitlebarCallbacks {
-    pub on_quick_open: ClickHandler,
-    pub on_command_palette: ClickHandler,
-    pub on_open_env_picker: ClickHandler,
-}
-
 pub fn render_titlebar(
     state: &AppState,
-    theme: Theme,
     is_fullscreen: bool,
-    callbacks: TitlebarCallbacks,
+    cx: &mut Context<EpistolaGui>,
 ) -> impl IntoElement {
+    let theme = *cx.global::<Theme>();
     let env_pill = match &state.environment {
         Some(name) => dot_pill(SharedString::from(name.clone()), theme.success, theme),
         None => dot_pill(
@@ -127,9 +123,11 @@ pub fn render_titlebar(
             div()
                 .id("env-pill")
                 .cursor_pointer()
-                .on_click(callbacks.on_open_env_picker)
+                .on_click(dispatch_on_click(OpenEnvironmentPicker))
                 .child(env_pill),
         )
-        .child(TitlebarButton::new("Quick Open", "⌘P", theme).on_click(callbacks.on_quick_open))
-        .child(TitlebarButton::new("Commands", "⌘K", theme).on_click(callbacks.on_command_palette))
+        .child(TitlebarButton::new("Quick Open", "⌘P").on_click(dispatch_on_click(ToggleQuickOpen)))
+        .child(
+            TitlebarButton::new("Commands", "⌘K").on_click(dispatch_on_click(ToggleCommandPalette)),
+        )
 }

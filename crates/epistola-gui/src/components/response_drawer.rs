@@ -1,11 +1,9 @@
-use std::rc::Rc;
+use gpui::{div, prelude::*, px, App, ClickEvent, Context, IntoElement, Window};
 
-use gpui::{div, prelude::*, px, App, ClickEvent, IntoElement, Window};
-
+use crate::actions::SelectResponseSubtab;
+use crate::root::EpistolaGui;
 use crate::state::{ActivityResult, ResponseSubTab};
 use crate::theme::Theme;
-
-pub type SubtabSelectHandler = Rc<dyn Fn(ResponseSubTab, &mut Window, &mut App)>;
 
 struct Chip {
     label: String,
@@ -30,7 +28,6 @@ fn drawer_subtab(
     tab: ResponseSubTab,
     active: ResponseSubTab,
     theme: Theme,
-    on_select: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     div()
         .id(label)
@@ -42,16 +39,20 @@ fn drawer_subtab(
             el.bg(theme.surface_raised).text_color(theme.text)
         })
         .when(tab != active, |el| el.text_color(theme.text_muted))
-        .on_click(on_select)
+        .on_click(
+            move |_event: &ClickEvent, window: &mut Window, cx: &mut App| {
+                window.dispatch_action(Box::new(SelectResponseSubtab { subtab: tab }), cx);
+            },
+        )
         .child(label)
 }
 
 pub fn render_response_drawer(
-    theme: Theme,
     activity: &ActivityResult,
     subtab: ResponseSubTab,
-    on_select_subtab: SubtabSelectHandler,
+    cx: &mut Context<EpistolaGui>,
 ) -> impl IntoElement {
+    let theme = *cx.global::<Theme>();
     let has_headers = matches!(activity, ActivityResult::RunSuccess(_));
 
     let (chip, meta, body): (Chip, Option<String>, gpui::AnyElement) = match activity {
@@ -198,32 +199,14 @@ pub fn render_response_drawer(
                 .border_color(theme.border)
                 .text_size(px(11.5))
                 .when(has_headers, |el| {
-                    let select_body = on_select_subtab.clone();
-                    let select_headers = on_select_subtab.clone();
-                    let select_raw = on_select_subtab.clone();
-                    el.child(drawer_subtab(
-                        "Body",
-                        ResponseSubTab::Body,
-                        subtab,
-                        theme,
-                        move |_event, window, cx| select_body(ResponseSubTab::Body, window, cx),
-                    ))
-                    .child(drawer_subtab(
-                        "Headers",
-                        ResponseSubTab::Headers,
-                        subtab,
-                        theme,
-                        move |_event, window, cx| {
-                            select_headers(ResponseSubTab::Headers, window, cx)
-                        },
-                    ))
-                    .child(drawer_subtab(
-                        "Raw",
-                        ResponseSubTab::Raw,
-                        subtab,
-                        theme,
-                        move |_event, window, cx| select_raw(ResponseSubTab::Raw, window, cx),
-                    ))
+                    el.child(drawer_subtab("Body", ResponseSubTab::Body, subtab, theme))
+                        .child(drawer_subtab(
+                            "Headers",
+                            ResponseSubTab::Headers,
+                            subtab,
+                            theme,
+                        ))
+                        .child(drawer_subtab("Raw", ResponseSubTab::Raw, subtab, theme))
                 })
                 .when(!has_headers, |el| {
                     el.child(

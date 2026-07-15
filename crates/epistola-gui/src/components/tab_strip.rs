@@ -1,18 +1,10 @@
-use std::rc::Rc;
+use gpui::{div, prelude::*, px, Context, IntoElement, SharedString};
 
-use gpui::{div, prelude::*, px, App, IntoElement, SharedString, Window};
-
-use crate::components::kit::{icon, IconName, MethodTag};
+use crate::actions::{CloseTab, SwitchTab};
+use crate::components::kit::{dispatch_on_click, icon, IconName, MethodTag};
+use crate::root::EpistolaGui;
 use crate::state::{ActiveFile, AppState};
 use crate::theme::Theme;
-
-pub type TabSelectHandler = Rc<dyn Fn(ActiveFile, &mut Window, &mut App)>;
-pub type TabCloseHandler = Rc<dyn Fn(ActiveFile, &mut Window, &mut App)>;
-
-pub struct TabStripCallbacks {
-    pub on_select: TabSelectHandler,
-    pub on_close: TabCloseHandler,
-}
 
 fn tab_glyph(state: &AppState, theme: Theme, file: &ActiveFile) -> gpui::AnyElement {
     match file {
@@ -39,7 +31,7 @@ fn tab_glyph(state: &AppState, theme: Theme, file: &ActiveFile) -> gpui::AnyElem
             .ok()
             .and_then(|c| c.find_request(path))
         {
-            Some(request) => MethodTag::new(request.method.clone(), theme).into_any_element(),
+            Some(request) => MethodTag::new(request.method.clone()).into_any_element(),
             None => div().into_any_element(),
         },
     }
@@ -66,11 +58,8 @@ fn tab_text(state: &AppState, file: &ActiveFile) -> SharedString {
     }
 }
 
-pub fn render_tab_strip(
-    state: &AppState,
-    theme: Theme,
-    callbacks: TabStripCallbacks,
-) -> impl IntoElement {
+pub fn render_tab_strip(state: &AppState, cx: &mut Context<EpistolaGui>) -> impl IntoElement {
+    let theme = *cx.global::<Theme>();
     div()
         .id("tab-strip")
         .flex()
@@ -82,8 +71,6 @@ pub fn render_tab_strip(
             let active = file == &state.active_file;
             let select_file = file.clone();
             let close_file = file.clone();
-            let on_select = callbacks.on_select.clone();
-            let on_close = callbacks.on_close.clone();
             div()
                 .id(SharedString::from(format!("tab-{file:?}")))
                 .flex()
@@ -98,7 +85,7 @@ pub fn render_tab_strip(
                 .text_size(px(12.5))
                 .text_color(if active { theme.text } else { theme.text_muted })
                 .cursor_pointer()
-                .on_click(move |_event, window, cx| on_select(select_file.clone(), window, cx))
+                .on_click(dispatch_on_click(SwitchTab { file: select_file }))
                 .child(tab_glyph(state, theme, file))
                 .child(
                     div()
@@ -130,7 +117,12 @@ pub fn render_tab_strip(
                         .hover(|el| el.bg(theme.border))
                         .on_click(move |_event, window, cx| {
                             cx.stop_propagation();
-                            on_close(close_file.clone(), window, cx);
+                            window.dispatch_action(
+                                Box::new(CloseTab {
+                                    file: close_file.clone(),
+                                }),
+                                cx,
+                            );
                         })
                         .child(icon(IconName::Close, px(9.), theme.text_faint)),
                 )

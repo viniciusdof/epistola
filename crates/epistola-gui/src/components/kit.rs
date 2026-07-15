@@ -1,6 +1,3 @@
-use std::path::PathBuf;
-use std::rc::Rc;
-
 use epistola_core::Method;
 use gpui::{
     div, prelude::*, px, svg, App, ClickEvent, Hsla, IntoElement, Pixels, RenderOnce, SharedString,
@@ -11,9 +8,11 @@ use crate::theme::Theme;
 
 pub type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
-pub type PathClickHandler = Rc<dyn Fn(PathBuf, &mut Window, &mut App)>;
-
-pub type StringClickHandler = Rc<dyn Fn(String, &mut Window, &mut App)>;
+pub fn dispatch_on_click<A: gpui::Action + Clone>(
+    action: A,
+) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
+    move |_event, window, cx| window.dispatch_action(Box::new(action.clone()), cx)
+}
 
 /// Lucide icons vendored under `assets/icons/`, served through
 /// `crate::assets::Assets` (an `AssetSource` impl registered on the `App`).
@@ -57,23 +56,23 @@ pub fn icon(name: IconName, size: Pixels, color: Hsla) -> Svg {
 #[derive(IntoElement)]
 pub struct MethodTag {
     method: Method,
-    theme: Theme,
 }
 
 impl MethodTag {
-    pub fn new(method: Method, theme: Theme) -> Self {
-        Self { method, theme }
+    pub fn new(method: Method) -> Self {
+        Self { method }
     }
 }
 
 impl RenderOnce for MethodTag {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = *cx.global::<Theme>();
         div()
             .flex_none()
             .w(px(34.))
             .font_weight(gpui::FontWeight::SEMIBOLD)
             .text_size(px(9.5))
-            .text_color(self.theme.method_color(&self.method))
+            .text_color(theme.method_color(&self.method))
             .child(self.method.as_str().to_string())
     }
 }
@@ -81,27 +80,26 @@ impl RenderOnce for MethodTag {
 #[derive(IntoElement)]
 pub struct KbdChip {
     label: SharedString,
-    theme: Theme,
 }
 
 impl KbdChip {
-    pub fn new(label: impl Into<SharedString>, theme: Theme) -> Self {
+    pub fn new(label: impl Into<SharedString>) -> Self {
         Self {
             label: label.into(),
-            theme,
         }
     }
 }
 
 impl RenderOnce for KbdChip {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = *cx.global::<Theme>();
         div()
             .font_family("monospace")
             .text_size(px(10.5))
-            .text_color(self.theme.text_muted)
-            .bg(self.theme.surface_raised)
+            .text_color(theme.text_muted)
+            .bg(theme.surface_raised)
             .border_1()
-            .border_color(self.theme.border)
+            .border_color(theme.border)
             .rounded(px(3.))
             .px(px(4.))
             .child(self.label)
@@ -112,20 +110,14 @@ impl RenderOnce for KbdChip {
 pub struct TitlebarButton {
     label: SharedString,
     shortcut: SharedString,
-    theme: Theme,
     on_click: Option<ClickHandler>,
 }
 
 impl TitlebarButton {
-    pub fn new(
-        label: impl Into<SharedString>,
-        shortcut: impl Into<SharedString>,
-        theme: Theme,
-    ) -> Self {
+    pub fn new(label: impl Into<SharedString>, shortcut: impl Into<SharedString>) -> Self {
         Self {
             label: label.into(),
             shortcut: shortcut.into(),
-            theme,
             on_click: None,
         }
     }
@@ -141,7 +133,7 @@ impl TitlebarButton {
 
 impl RenderOnce for TitlebarButton {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme = self.theme;
+        let theme = *cx.global::<Theme>();
         div()
             .id(SharedString::from(format!("titlebar-btn-{}", self.label)))
             .flex()
@@ -158,7 +150,7 @@ impl RenderOnce for TitlebarButton {
             .hover(|el| el.border_color(theme.accent).text_color(theme.accent))
             .when_some(self.on_click, |el, handler| el.on_click(handler))
             .child(self.label)
-            .child(KbdChip::new(self.shortcut, theme).render(window, cx))
+            .child(KbdChip::new(self.shortcut).render(window, cx))
     }
 }
 
@@ -169,17 +161,15 @@ pub struct RailButton {
     icon_name: IconName,
     tooltip: SharedString,
     active: bool,
-    theme: Theme,
     on_click: Option<ClickHandler>,
 }
 
 impl RailButton {
-    pub fn new(icon_name: IconName, tooltip: impl Into<SharedString>, theme: Theme) -> Self {
+    pub fn new(icon_name: IconName, tooltip: impl Into<SharedString>) -> Self {
         Self {
             icon_name,
             tooltip: tooltip.into(),
             active: false,
-            theme,
             on_click: None,
         }
     }
@@ -199,8 +189,8 @@ impl RailButton {
 }
 
 impl RenderOnce for RailButton {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let theme = self.theme;
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = *cx.global::<Theme>();
         let clickable = self.on_click.is_some();
         div()
             .id(SharedString::from(format!("rail-{}", self.tooltip)))

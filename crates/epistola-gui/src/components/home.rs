@@ -1,27 +1,14 @@
 use std::path::PathBuf;
 
-use gpui::{div, prelude::*, px, App, ClickEvent, FocusHandle, IntoElement, SharedString, Window};
+use gpui::{div, prelude::*, px, Context, FocusHandle, IntoElement, SharedString};
 
-use crate::components::kit::{ClickHandler, KbdChip, PathClickHandler};
+use crate::actions::{NewCollection, OpenCollection, OpenRecentCollection};
+use crate::components::kit::{dispatch_on_click, ClickHandler, KbdChip};
+use crate::root::EpistolaGui;
 use crate::state::AppState;
 use crate::theme::Theme;
 
-pub struct HomeCallbacks<O, N>
-where
-    O: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    N: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-{
-    pub on_open_recent: PathClickHandler,
-    pub on_open_collection: O,
-    pub on_new_collection: N,
-}
-
-fn recent_item(
-    path: PathBuf,
-    is_current: bool,
-    theme: Theme,
-    on_click: PathClickHandler,
-) -> impl IntoElement {
+fn recent_item(path: PathBuf, is_current: bool, theme: Theme) -> impl IntoElement {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -44,7 +31,7 @@ fn recent_item(
             el.border_color(theme.border)
                 .hover(|el| el.border_color(theme.accent))
         })
-        .on_click(move |_event, window, cx| on_click(path.clone(), window, cx))
+        .on_click(dispatch_on_click(OpenRecentCollection { path }))
         .child(
             div()
                 .flex()
@@ -97,9 +84,7 @@ fn start_action(
         .hover(|el| el.border_color(theme.accent).text_color(theme.accent))
         .when_some(on_click, |el, handler| el.on_click(handler))
         .child(label)
-        .when_some(shortcut, |el, shortcut| {
-            el.child(KbdChip::new(shortcut, theme))
-        })
+        .when_some(shortcut, |el, shortcut| el.child(KbdChip::new(shortcut)))
 }
 
 fn shortcut_row(label: &'static str, chip: &'static str, theme: Theme) -> impl IntoElement {
@@ -110,19 +95,15 @@ fn shortcut_row(label: &'static str, chip: &'static str, theme: Theme) -> impl I
         .text_size(px(12.5))
         .text_color(theme.text_muted)
         .child(label)
-        .child(KbdChip::new(chip, theme))
+        .child(KbdChip::new(chip))
 }
 
-pub fn render_home<O, N>(
+pub fn render_home(
     state: &AppState,
-    theme: Theme,
-    callbacks: HomeCallbacks<O, N>,
     focus_handle: &FocusHandle,
-) -> impl IntoElement
-where
-    O: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    N: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-{
+    cx: &mut Context<EpistolaGui>,
+) -> impl IntoElement {
+    let theme = *cx.global::<Theme>();
     let current_root = state.collection.as_ref().ok().map(|c| c.root.clone());
 
     let recent_list: gpui::AnyElement = if state.recent_collections.is_empty() {
@@ -137,7 +118,7 @@ where
         div()
             .children(state.recent_collections.iter().cloned().map(|path| {
                 let is_current = current_root.as_deref() == Some(path.as_path());
-                recent_item(path, is_current, theme, callbacks.on_open_recent.clone())
+                recent_item(path, is_current, theme)
             }))
             .into_any_element()
     };
@@ -212,13 +193,13 @@ where
                                     "Open collection…",
                                     Some("⌘O"),
                                     theme,
-                                    Some(Box::new(callbacks.on_open_collection)),
+                                    Some(Box::new(dispatch_on_click(OpenCollection))),
                                 ))
                                 .child(start_action(
                                     "New collection",
                                     None,
                                     theme,
-                                    Some(Box::new(callbacks.on_new_collection)),
+                                    Some(Box::new(dispatch_on_click(NewCollection))),
                                 ))
                                 .child(start_action("Clone repository…", None, theme, None))
                                 .when_some(state.collection_action_error.clone(), |el, message| {

@@ -1,16 +1,13 @@
 use std::path::Path;
 
-use gpui::{div, prelude::*, px, IntoElement, SharedString};
+use gpui::{div, prelude::*, px, Context, IntoElement, SharedString};
 
+use crate::actions::{OpenEnvironmentDoc, OpenFolderDoc, OpenRequestFile, OpenSettings};
 use crate::collection::{FolderEntry, RequestEntry};
-use crate::components::kit::{icon, IconName, MethodTag, PathClickHandler, StringClickHandler};
-use crate::components::palette::SelectHandler;
+use crate::components::kit::{dispatch_on_click, icon, IconName, MethodTag};
+use crate::root::EpistolaGui;
 use crate::state::{ActiveFile, AppState};
 use crate::theme::Theme;
-
-pub type OpenRequestHandler = PathClickHandler;
-pub type OpenFolderHandler = PathClickHandler;
-pub type OpenEnvironmentHandler = StringClickHandler;
 
 fn section_label(label: impl Into<SharedString>, theme: Theme) -> impl IntoElement {
     div()
@@ -43,30 +40,21 @@ fn selectable_row(active: bool, indent: f32, theme: Theme) -> gpui::Div {
         })
 }
 
-pub struct SidebarCallbacks {
-    pub on_open_request: OpenRequestHandler,
-    pub on_open_config: SelectHandler,
-    pub on_open_folder: OpenFolderHandler,
-    pub on_open_environment: OpenEnvironmentHandler,
-}
-
 fn render_request_row(
     request: &RequestEntry,
     active: bool,
     depth: usize,
     theme: Theme,
-    on_open_request: &OpenRequestHandler,
 ) -> impl IntoElement {
     let path = request.abs_path.clone();
-    let on_open_request = on_open_request.clone();
     selectable_row(active, depth as f32 * 14., theme)
         .id(SharedString::from(format!(
             "sidebar-request-{}",
             request.rel_path.display()
         )))
-        .on_click(move |_event, window, cx| on_open_request(path.clone(), window, cx))
+        .on_click(dispatch_on_click(OpenRequestFile { path }))
         .aria_label(SharedString::from(request.display_name.clone()))
-        .child(MethodTag::new(request.method.clone(), theme))
+        .child(MethodTag::new(request.method.clone()))
         .child(
             div()
                 .overflow_hidden()
@@ -75,7 +63,6 @@ fn render_request_row(
         )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_folder_rows(
     collection_root: &Path,
     folder: &FolderEntry,
@@ -83,8 +70,6 @@ fn render_folder_rows(
     active_path: Option<&Path>,
     active_folder: Option<&Path>,
     theme: Theme,
-    on_open_request: &OpenRequestHandler,
-    on_open_folder: &OpenFolderHandler,
     out: &mut Vec<gpui::AnyElement>,
 ) {
     let folder_abs_path = collection_root.join(&folder.rel_path);
@@ -109,10 +94,11 @@ fn render_folder_rows(
         .child(div().child(folder.name.clone()))
         .child(div().flex_1());
     if folder.has_folder_toml {
-        let on_open_folder = on_open_folder.clone();
         row = row
             .cursor_pointer()
-            .on_click(move |_event, window, cx| on_open_folder(folder_abs_path.clone(), window, cx))
+            .on_click(dispatch_on_click(OpenFolderDoc {
+                dir: folder_abs_path,
+            }))
             .child(
                 div()
                     .text_size(px(9.5))
@@ -128,10 +114,7 @@ fn render_folder_rows(
 
     for request in &folder.requests {
         let active = active_path == Some(request.abs_path.as_path());
-        out.push(
-            render_request_row(request, active, depth + 1, theme, on_open_request)
-                .into_any_element(),
-        );
+        out.push(render_request_row(request, active, depth + 1, theme).into_any_element());
     }
     for child in &folder.folders {
         render_folder_rows(
@@ -141,8 +124,6 @@ fn render_folder_rows(
             active_path,
             active_folder,
             theme,
-            on_open_request,
-            on_open_folder,
             out,
         );
     }
@@ -157,11 +138,8 @@ fn render_collection_error(message: &str, theme: Theme) -> impl IntoElement {
         .child(format!("No collection here: {message}"))
 }
 
-pub fn render_sidebar(
-    state: &AppState,
-    theme: Theme,
-    callbacks: SidebarCallbacks,
-) -> impl IntoElement {
+pub fn render_sidebar(state: &AppState, cx: &mut Context<EpistolaGui>) -> impl IntoElement {
+    let theme = *cx.global::<Theme>();
     let mut list = div()
         .id("sidebar")
         .flex()
@@ -193,10 +171,7 @@ pub fn render_sidebar(
             let mut rows: Vec<gpui::AnyElement> = Vec::new();
             for request in &collection.requests {
                 let active = active_path == Some(request.abs_path.as_path());
-                rows.push(
-                    render_request_row(request, active, 1, theme, &callbacks.on_open_request)
-                        .into_any_element(),
-                );
+                rows.push(render_request_row(request, active, 1, theme).into_any_element());
             }
             for folder in &collection.folders {
                 render_folder_rows(
@@ -206,8 +181,6 @@ pub fn render_sidebar(
                     active_path,
                     active_folder,
                     theme,
-                    &callbacks.on_open_request,
-                    &callbacks.on_open_folder,
                     &mut rows,
                 );
             }
@@ -227,13 +200,10 @@ pub fn render_sidebar(
                 for env in &collection.environments {
                     let active = active_environment == Some(env.as_str());
                     let name = env.clone();
-                    let on_open_environment = callbacks.on_open_environment.clone();
                     list = list.child(
                         selectable_row(active, 0., theme)
                             .id(SharedString::from(format!("sidebar-env-{env}")))
-                            .on_click(move |_event, window, cx| {
-                                on_open_environment(name.clone(), window, cx)
-                            })
+                            .on_click(dispatch_on_click(OpenEnvironmentDoc { name }))
                             .child(env.clone()),
                     );
                 }
@@ -247,11 +217,10 @@ pub fn render_sidebar(
 
     list = list.child(section_label("user", theme));
     let config_active = state.active_file == ActiveFile::Config;
-    let on_open_config = callbacks.on_open_config.clone();
     list = list.child(
         selectable_row(config_active, 0., theme)
             .id("sidebar-config")
-            .on_click(move |_event, window, cx| on_open_config(window, cx))
+            .on_click(dispatch_on_click(OpenSettings))
             .child(div().flex_none().w(px(34.)).child(icon(
                 IconName::Settings,
                 px(12.),

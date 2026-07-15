@@ -1,30 +1,30 @@
-use std::rc::Rc;
-
 use epistola_core::Method;
-use gpui::{div, prelude::*, px, App, ClickEvent, FocusHandle, IntoElement, SharedString, Window};
+use gpui::{
+    div, prelude::*, px, Action, ClickEvent, Context, FocusHandle, IntoElement, SharedString,
+};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Matcher, Utf32Str};
 
 use crate::components::kit::MethodTag;
+use crate::root::EpistolaGui;
 use crate::theme::Theme;
 
-pub type SelectHandler = Rc<dyn Fn(&mut Window, &mut App)>;
-
-#[derive(Clone)]
 pub struct PaletteItem {
     pub leading_method: Option<Method>,
     pub label: SharedString,
     pub shortcut: Option<SharedString>,
-    pub on_select: SelectHandler,
+    pub action: Box<dyn Action>,
+    pub closes_overlay: bool,
 }
 
 impl PaletteItem {
-    pub fn new(label: impl Into<SharedString>, on_select: SelectHandler) -> Self {
+    pub fn new(label: impl Into<SharedString>, action: impl Action) -> Self {
         Self {
             leading_method: None,
             label: label.into(),
             shortcut: None,
-            on_select,
+            action: Box::new(action),
+            closes_overlay: true,
         }
     }
 
@@ -35,6 +35,11 @@ impl PaletteItem {
 
     pub fn leading_method(mut self, method: Method) -> Self {
         self.leading_method = Some(method);
+        self
+    }
+
+    pub fn keep_overlay_open(mut self) -> Self {
+        self.closes_overlay = false;
         self
     }
 }
@@ -66,12 +71,9 @@ fn render_item(
     theme: Theme,
     index: usize,
     is_selected: bool,
+    cx: &mut Context<EpistolaGui>,
 ) -> impl IntoElement {
-    let on_select = item.on_select.clone();
-    let leading = item
-        .leading_method
-        .clone()
-        .map(|method| MethodTag::new(method, theme));
+    let leading = item.leading_method.clone().map(MethodTag::new);
     div()
         .id(SharedString::from(format!("palette-item-{index}")))
         .flex()
@@ -88,10 +90,10 @@ fn render_item(
             el.bg(theme.accent).text_color(theme.accent_ink)
         })
         .hover(|el| el.bg(theme.accent).text_color(theme.accent_ink))
-        .on_click(move |_event, window, cx| {
+        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
             cx.stop_propagation();
-            on_select(window, cx);
-        })
+            this.activate_overlay_item(index, window, cx);
+        }))
         .child(
             div()
                 .flex()
@@ -118,7 +120,7 @@ pub fn render_palette_overlay(
     selected: usize,
     theme: Theme,
     focus_handle: &FocusHandle,
-    on_dismiss: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &mut Context<EpistolaGui>,
 ) -> impl IntoElement {
     let empty = items.is_empty();
     div()
@@ -131,7 +133,7 @@ pub fn render_palette_overlay(
         .items_start()
         .pt(px(96.))
         .bg(gpui::black().opacity(0.55))
-        .on_click(on_dismiss)
+        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx)))
         .child(
             div()
                 .id("palette-box")
@@ -173,7 +175,7 @@ pub fn render_palette_overlay(
                             items
                                 .iter()
                                 .enumerate()
-                                .map(|(i, item)| render_item(item, theme, i, i == selected)),
+                                .map(|(i, item)| render_item(item, theme, i, i == selected, cx)),
                         ),
                 )
                 .when(empty, |el| {

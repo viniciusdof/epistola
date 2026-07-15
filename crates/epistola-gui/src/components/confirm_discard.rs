@@ -1,16 +1,13 @@
-use std::rc::Rc;
-
 use gpui::{black, div, prelude::*, px, App, ClickEvent, IntoElement, Window};
 
+use crate::components::kit::ClickHandler;
 use crate::theme::Theme;
-
-pub type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 fn button(
     label: &'static str,
     theme: Theme,
     emphasize: bool,
-    on_click: ClickHandler,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     div()
         .id(label)
@@ -35,7 +32,11 @@ fn button(
         .child(label)
 }
 
-fn delete_button(label: &'static str, theme: Theme, on_click: ClickHandler) -> impl IntoElement {
+fn delete_button(
+    label: &'static str,
+    theme: Theme,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
     div()
         .id(label)
         .px(px(12.))
@@ -55,15 +56,16 @@ fn delete_button(label: &'static str, theme: Theme, on_click: ClickHandler) -> i
 
 /// Destructive confirmation (delete request): red title, single "Delete"
 /// button instead of confirm_discard's neutral Save/Discard pair.
+#[allow(clippy::too_many_arguments)]
 pub fn render_confirm_delete(
     title: &str,
     message: &str,
     error: Option<&str>,
-    on_confirm: ClickHandler,
-    on_cancel: ClickHandler,
+    on_confirm: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_dismiss: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_cancel: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     theme: Theme,
 ) -> impl IntoElement {
-    let backdrop_cancel = on_cancel.clone();
     div()
         .id("confirm-delete-backdrop")
         .absolute()
@@ -73,7 +75,7 @@ pub fn render_confirm_delete(
         .items_start()
         .pt(px(120.))
         .bg(black().opacity(0.55))
-        .on_click(move |event, window, cx| backdrop_cancel(event, window, cx))
+        .on_click(on_dismiss)
         .child(
             div()
                 .id("confirm-delete-box")
@@ -121,14 +123,15 @@ pub fn render_confirm_delete(
         )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_confirm_discard(
     message: &str,
     on_save: Option<ClickHandler>,
-    on_discard: ClickHandler,
-    on_cancel: ClickHandler,
+    on_discard: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_dismiss: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_cancel: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     theme: Theme,
 ) -> impl IntoElement {
-    let backdrop_cancel = on_cancel.clone();
     div()
         .id("confirm-discard-backdrop")
         .absolute()
@@ -138,7 +141,7 @@ pub fn render_confirm_discard(
         .items_start()
         .pt(px(120.))
         .bg(black().opacity(0.55))
-        .on_click(move |event, window, cx| backdrop_cancel(event, window, cx))
+        .on_click(on_dismiss)
         .child(
             div()
                 .id("confirm-discard-box")

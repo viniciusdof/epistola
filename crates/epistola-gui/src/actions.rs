@@ -1,7 +1,9 @@
-use gpui::{actions, Context, PathPromptOptions};
+use std::path::PathBuf;
+
+use gpui::{actions, Action, Context, PathPromptOptions};
 
 use crate::root::EpistolaGui;
-use crate::state::{ConfirmDiscardKind, Overlay};
+use crate::state::{ActiveFile, ConfirmDiscardKind, Overlay, ResponseSubTab};
 
 actions!(
     editor,
@@ -34,14 +36,74 @@ actions!(
         ToggleQuickOpen,
         OpenSettings,
         GoHome,
+        GoWorkspace,
         RunActiveRequest,
         ShowResolvedRequest,
         LintCollection,
         CycleEnvironment,
         OpenCollection,
+        NewCollection,
+        OpenEnvironmentPicker,
+        OpenHistory,
+        NewRequest,
+        RenameRequest,
+        DuplicateRequest,
+        DeleteRequest,
         Dismiss,
     ]
 );
+
+/// Navigation/CRUD actions with payload: unlike the unit actions above these
+/// carry the data a click site already has (a path, a name, a tab) so the
+/// same dispatch works whether it comes from a keybinding, the palette, or a
+/// mouse click. None are ever built from a JSON keymap, hence `no_json`.
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = app, no_json)]
+pub struct OpenRequestFile {
+    pub path: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = app, no_json)]
+pub struct OpenFolderDoc {
+    pub dir: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = app, no_json)]
+pub struct OpenEnvironmentDoc {
+    pub name: String,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = app, no_json)]
+pub struct SwitchTab {
+    pub file: ActiveFile,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = app, no_json)]
+pub struct CloseTab {
+    pub file: ActiveFile,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = app, no_json)]
+pub struct SelectEnvironment {
+    pub name: String,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = app, no_json)]
+pub struct OpenRecentCollection {
+    pub path: PathBuf,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = app, no_json)]
+pub struct SelectResponseSubtab {
+    pub subtab: ResponseSubTab,
+}
 
 fn folder_prompt(prompt: &str) -> PathPromptOptions {
     PathPromptOptions {

@@ -1,16 +1,12 @@
-use std::rc::Rc;
-
 use gpui::{black, div, prelude::*, px, App, ClickEvent, FocusHandle, IntoElement, Window};
 
 use crate::theme::Theme;
-
-pub type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 fn button(
     label: &'static str,
     theme: Theme,
     emphasize: bool,
-    on_click: ClickHandler,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     div()
         .id(label)
@@ -47,10 +43,10 @@ pub fn render_prompt_modal(
     confirm_label: &'static str,
     theme: Theme,
     focus_handle: &FocusHandle,
-    on_confirm: ClickHandler,
-    on_cancel: ClickHandler,
+    on_confirm: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_dismiss: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_cancel: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let backdrop_cancel = on_cancel.clone();
     div()
         .id("prompt-modal-backdrop")
         .track_focus(focus_handle)
@@ -61,7 +57,7 @@ pub fn render_prompt_modal(
         .items_start()
         .pt(px(120.))
         .bg(black().opacity(0.55))
-        .on_click(move |event, window, cx| backdrop_cancel(event, window, cx))
+        .on_click(on_dismiss)
         .child(
             div()
                 .id("prompt-modal-box")

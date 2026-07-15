@@ -2,43 +2,38 @@
 //! that mutates it.
 
 use std::path::PathBuf;
-use std::rc::Rc;
 
 use gpui::{
     div, prelude::*, px, App, ClickEvent, Context, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, Render, WeakEntity, Window,
+    KeyDownEvent, Render, Window,
 };
 use nucleo_matcher::{Config, Matcher};
 
 use crate::actions::{
-    CycleEnvironment, Dismiss, GoHome, LintCollection, OpenCollection, OpenSettings,
-    RunActiveRequest, ShowResolvedRequest, ToggleCommandPalette, ToggleQuickOpen,
+    CloseTab, CycleEnvironment, DeleteRequest, Dismiss, DuplicateRequest, GoHome, GoWorkspace,
+    LintCollection, NewCollection, NewRequest, OpenCollection, OpenEnvironmentDoc,
+    OpenEnvironmentPicker, OpenFolderDoc, OpenHistory, OpenRecentCollection, OpenRequestFile,
+    OpenSettings, RenameRequest, RunActiveRequest, SelectEnvironment, SelectResponseSubtab,
+    ShowResolvedRequest, SwitchTab, ToggleCommandPalette, ToggleQuickOpen,
 };
-use crate::components::confirm_discard::{self, ClickHandler};
+use crate::components::confirm_discard;
 use crate::components::editor_text::EditorLayout;
 use crate::components::env_popover;
 use crate::components::history_modal;
-use crate::components::palette::{
-    filter_items, render_palette_overlay, PaletteItem, SelectHandler,
-};
+use crate::components::palette::{filter_items, render_palette_overlay, PaletteItem};
 use crate::components::prompt_modal::render_prompt_modal;
-use crate::components::sidebar::SidebarCallbacks;
-use crate::components::tab_strip::TabStripCallbacks;
-use crate::components::titlebar::TitlebarCallbacks;
 use crate::components::{
     activity_rail, editor, home, response_drawer, sidebar, statusbar, titlebar,
 };
 use crate::editor_save;
 use crate::execution;
 use crate::state::{
-    ActiveFile, ActivityResult, AppState, ConfirmDiscardKind, Overlay, PromptKind, ResponseSubTab,
-    View,
+    ActiveFile, ActivityResult, AppState, ConfirmDiscardKind, Overlay, PromptKind, View,
 };
 use crate::theme::Theme;
 
 pub struct EpistolaGui {
     pub(crate) state: AppState,
-    theme: Theme,
     pub(crate) editor_focus_handle: FocusHandle,
     overlay_focus_handle: FocusHandle,
     pub(crate) editor_layout: Option<EditorLayout>,
@@ -51,7 +46,6 @@ impl EpistolaGui {
     pub fn new(cwd: PathBuf, cx: &mut Context<Self>) -> Self {
         Self {
             state: AppState::new(cwd),
-            theme: Theme::dark(),
             editor_focus_handle: cx.focus_handle(),
             overlay_focus_handle: cx.focus_handle(),
             editor_layout: None,
@@ -75,7 +69,7 @@ impl EpistolaGui {
         cx.notify();
     }
 
-    fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.state.close_overlay();
         window.focus(&self.editor_focus_handle, cx);
         cx.notify();
@@ -86,7 +80,7 @@ impl EpistolaGui {
             self.close_overlay(window, cx);
         } else {
             self.open_overlay(Overlay::CommandPalette, window, cx);
-            self.refresh_overlay_items(cx);
+            self.refresh_overlay_items();
         }
     }
 
@@ -95,7 +89,7 @@ impl EpistolaGui {
             self.close_overlay(window, cx);
         } else {
             self.open_overlay(Overlay::QuickOpen, window, cx);
-            self.refresh_overlay_items(cx);
+            self.refresh_overlay_items();
         }
     }
 
@@ -116,11 +110,10 @@ impl EpistolaGui {
         self.open_overlay(Overlay::History, window, cx);
     }
 
-    fn refresh_overlay_items(&mut self, cx: &mut Context<Self>) {
-        let weak = cx.entity().downgrade();
+    fn refresh_overlay_items(&mut self) {
         let items = match self.state.overlay {
-            Some(Overlay::CommandPalette) => command_palette_items(weak, &self.state),
-            Some(Overlay::QuickOpen) => quick_open_items(weak, &self.state),
+            Some(Overlay::CommandPalette) => command_palette_items(&self.state),
+            Some(Overlay::QuickOpen) => quick_open_items(&self.state),
             _ => Vec::new(),
         };
         self.overlay_items =
@@ -323,6 +316,31 @@ impl EpistolaGui {
         }
     }
 
+    fn open_recent_collection(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.state.has_unsaved_changes() {
+            self.state.overlay = Some(Overlay::ConfirmDiscard(
+                ConfirmDiscardKind::SwitchCollection(path),
+            ));
+        } else {
+            self.state.open_collection_at(path);
+        }
+        cx.notify();
+    }
+
+    fn close_tab_action(&mut self, file: ActiveFile, cx: &mut Context<Self>) {
+        if self.state.is_dirty(&file) {
+            self.state.overlay = Some(Overlay::ConfirmDiscard(ConfirmDiscardKind::CloseTab(file)));
+        } else {
+            self.state.close_tab(&file);
+        }
+        cx.notify();
+    }
+
+    fn select_environment(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.set_environment(name);
+        self.close_overlay(window, cx);
+    }
+
     fn overlay_item_count(&self) -> usize {
         match self.state.overlay {
             Some(Overlay::CommandPalette) | Some(Overlay::QuickOpen) => self.overlay_items.len(),
@@ -352,6 +370,16 @@ impl EpistolaGui {
         cx.notify();
     }
 
+    pub(crate) fn activate_overlay_item(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.overlay_selected = index;
+        self.confirm_overlay_selection(window, cx);
+    }
+
     fn confirm_overlay_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(overlay) = self.state.overlay.clone() else {
             return;
@@ -360,8 +388,11 @@ impl EpistolaGui {
         match overlay {
             Overlay::CommandPalette | Overlay::QuickOpen => {
                 if let Some(item) = self.overlay_items.get(selected) {
-                    let on_select = item.on_select.clone();
-                    window.defer(cx, move |window, cx| on_select(window, cx));
+                    let action = item.action.boxed_clone();
+                    if item.closes_overlay {
+                        self.close_overlay(window, cx);
+                    }
+                    window.dispatch_action(action, cx);
                 }
             }
             Overlay::EnvironmentPicker => {
@@ -372,8 +403,7 @@ impl EpistolaGui {
                     .ok()
                     .and_then(|collection| collection.environments.get(selected).cloned());
                 if let Some(name) = name {
-                    self.state.set_environment(name);
-                    self.close_overlay(window, cx);
+                    self.select_environment(name, window, cx);
                 }
             }
             Overlay::Prompt(kind) => self.submit_prompt(kind, window, cx),
@@ -402,7 +432,7 @@ impl EpistolaGui {
             "backspace" if has_query => {
                 self.state.overlay_query.pop();
                 self.state.overlay_selected = 0;
-                self.refresh_overlay_items(cx);
+                self.refresh_overlay_items();
                 cx.notify();
             }
             _ if has_query => {
@@ -410,7 +440,7 @@ impl EpistolaGui {
                     if !ch.is_empty() {
                         self.state.overlay_query.push_str(ch);
                         self.state.overlay_selected = 0;
-                        self.refresh_overlay_items(cx);
+                        self.refresh_overlay_items();
                         cx.notify();
                     }
                 }
@@ -418,32 +448,6 @@ impl EpistolaGui {
             _ => {}
         }
     }
-}
-
-fn make_action(
-    weak: WeakEntity<EpistolaGui>,
-    f: impl Fn(&mut EpistolaGui, &mut Context<EpistolaGui>) + 'static,
-) -> SelectHandler {
-    Rc::new(move |window, cx| {
-        let _ = weak.update(cx, |this, cx| {
-            f(this, cx);
-            this.state.close_overlay();
-            window.focus(&this.editor_focus_handle, cx);
-            cx.notify();
-        });
-    })
-}
-
-/// Like `make_action`, but for palette items that hand off to another
-/// overlay (a prompt or confirmation) instead of finishing the interaction —
-/// it must not close that follow-up overlay the way `make_action` would.
-fn make_prompt_action(
-    weak: WeakEntity<EpistolaGui>,
-    f: impl Fn(&mut EpistolaGui, &mut Window, &mut Context<EpistolaGui>) + 'static,
-) -> SelectHandler {
-    Rc::new(move |window, cx| {
-        let _ = weak.update(cx, |this, cx| f(this, window, cx));
-    })
 }
 
 fn format_lint_report(report: &epistola_engine::requests::LintReport) -> String {
@@ -462,85 +466,29 @@ fn format_lint_report(report: &epistola_engine::requests::LintReport) -> String 
     }
 }
 
-fn command_palette_items(weak: WeakEntity<EpistolaGui>, state: &AppState) -> Vec<PaletteItem> {
+fn command_palette_items(state: &AppState) -> Vec<PaletteItem> {
     let mut items = Vec::new();
 
     if state.active_request().is_some() {
-        items.push(
-            PaletteItem::new(
-                "Run request",
-                make_action(weak.clone(), |this, cx| this.run_active_request(cx)),
-            )
-            .shortcut("⌘⏎"),
-        );
-
-        items.push(
-            PaletteItem::new(
-                "Show resolved request",
-                make_action(weak.clone(), |this, cx| this.show_resolved_request(cx)),
-            )
-            .shortcut("⌘⇧R"),
-        );
-
-        items.push(PaletteItem::new(
-            "Rename Request",
-            make_prompt_action(weak.clone(), |this, window, cx| {
-                this.start_rename_request_prompt(window, cx)
-            }),
-        ));
-
-        items.push(PaletteItem::new(
-            "Duplicate Request",
-            make_prompt_action(weak.clone(), |this, window, cx| {
-                this.start_duplicate_request_prompt(window, cx)
-            }),
-        ));
-
-        items.push(PaletteItem::new(
-            "Delete Request",
-            make_prompt_action(weak.clone(), |this, window, cx| {
-                this.start_delete_request_confirm(window, cx)
-            }),
-        ));
+        items.push(PaletteItem::new("Run request", RunActiveRequest).shortcut("⌘⏎"));
+        items.push(PaletteItem::new("Show resolved request", ShowResolvedRequest).shortcut("⌘⇧R"));
+        items.push(PaletteItem::new("Rename Request", RenameRequest).keep_overlay_open());
+        items.push(PaletteItem::new("Duplicate Request", DuplicateRequest).keep_overlay_open());
+        items.push(PaletteItem::new("Delete Request", DeleteRequest).keep_overlay_open());
     }
 
     if state.collection.is_ok() {
-        items.push(PaletteItem::new(
-            "New Request",
-            make_prompt_action(weak.clone(), |this, window, cx| {
-                this.start_new_request_prompt(window, cx)
-            }),
-        ));
-
-        items.push(
-            PaletteItem::new(
-                "Lint collection",
-                make_action(weak.clone(), |this, cx| this.lint_collection(cx)),
-            )
-            .shortcut("⌘⇧L"),
-        );
-
-        items.push(
-            PaletteItem::new(
-                "Switch environment",
-                make_action(weak.clone(), |this, cx| this.cycle_environment_action(cx)),
-            )
-            .shortcut("⌘E"),
-        );
+        items.push(PaletteItem::new("New Request", NewRequest).keep_overlay_open());
+        items.push(PaletteItem::new("Lint collection", LintCollection).shortcut("⌘⇧L"));
+        items.push(PaletteItem::new("Switch environment", CycleEnvironment).shortcut("⌘E"));
     }
 
-    items.push(
-        PaletteItem::new(
-            "Open settings",
-            make_action(weak.clone(), |this, cx| this.open_settings(cx)),
-        )
-        .shortcut("⌘,"),
-    );
+    items.push(PaletteItem::new("Open settings", OpenSettings).shortcut("⌘,"));
 
     items
 }
 
-fn quick_open_items(weak: WeakEntity<EpistolaGui>, state: &AppState) -> Vec<PaletteItem> {
+fn quick_open_items(state: &AppState) -> Vec<PaletteItem> {
     let Ok(collection) = &state.collection else {
         return Vec::new();
     };
@@ -551,9 +499,7 @@ fn quick_open_items(weak: WeakEntity<EpistolaGui>, state: &AppState) -> Vec<Pale
             let path = request.abs_path.clone();
             PaletteItem::new(
                 request.rel_path.display().to_string(),
-                make_action(weak.clone(), move |this, _cx| {
-                    this.state.open_request(path.clone())
-                }),
+                OpenRequestFile { path },
             )
             .leading_method(request.method.clone())
         })
@@ -562,184 +508,28 @@ fn quick_open_items(weak: WeakEntity<EpistolaGui>, state: &AppState) -> Vec<Pale
 
 impl Render for EpistolaGui {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self.theme;
-        let weak = cx.entity().downgrade();
+        let theme = *cx.global::<Theme>();
         let is_fullscreen = window.is_fullscreen();
-
-        let rail_callbacks = activity_rail::RailCallbacks {
-            on_home: Box::new(cx.listener(|this, _: &ClickEvent, _window, cx| this.go_home(cx))),
-            on_workspace: Box::new(
-                cx.listener(|this, _: &ClickEvent, _window, cx| this.go_workspace(cx)),
-            ),
-            on_environments: Box::new(cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.open_environment_picker(window, cx)
-            })),
-            on_history: Box::new(
-                cx.listener(|this, _: &ClickEvent, window, cx| this.open_history(window, cx)),
-            ),
-            on_settings: Box::new(
-                cx.listener(|this, _: &ClickEvent, _window, cx| this.open_settings(cx)),
-            ),
-        };
-
-        let titlebar_callbacks = TitlebarCallbacks {
-            on_quick_open: Box::new(
-                cx.listener(|this, _: &ClickEvent, window, cx| this.toggle_quick_open(window, cx)),
-            ),
-            on_command_palette: Box::new(cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.toggle_command_palette(window, cx)
-            })),
-            on_open_env_picker: Box::new(cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.open_environment_picker(window, cx)
-            })),
-        };
-
-        let sidebar_callbacks = SidebarCallbacks {
-            on_open_request: {
-                let weak = weak.clone();
-                Rc::new(move |path: PathBuf, _window: &mut Window, cx: &mut App| {
-                    let _ = weak.update(cx, |this, cx| {
-                        this.state.open_request(path);
-                        cx.notify();
-                    });
-                })
-            },
-            on_open_config: {
-                let weak = weak.clone();
-                Rc::new(move |_window: &mut Window, cx: &mut App| {
-                    let _ = weak.update(cx, |this, cx| {
-                        this.state.open_config();
-                        cx.notify();
-                    });
-                })
-            },
-            on_open_folder: {
-                let weak = weak.clone();
-                Rc::new(move |dir: PathBuf, _window: &mut Window, cx: &mut App| {
-                    let _ = weak.update(cx, |this, cx| {
-                        this.state.open_folder_doc(dir);
-                        cx.notify();
-                    });
-                })
-            },
-            on_open_environment: {
-                let weak = weak.clone();
-                Rc::new(move |name: String, _window: &mut Window, cx: &mut App| {
-                    let _ = weak.update(cx, |this, cx| {
-                        this.state.open_environment_doc(name);
-                        cx.notify();
-                    });
-                })
-            },
-        };
-
-        let home_callbacks = home::HomeCallbacks {
-            on_open_recent: {
-                let weak = weak.clone();
-                Rc::new(move |path: PathBuf, _window: &mut Window, cx: &mut App| {
-                    let _ = weak.update(cx, |this, cx| {
-                        if this.state.has_unsaved_changes() {
-                            this.state.overlay = Some(Overlay::ConfirmDiscard(
-                                ConfirmDiscardKind::SwitchCollection(path),
-                            ));
-                        } else {
-                            this.state.open_collection_at(path);
-                        }
-                        cx.notify();
-                    });
-                })
-            },
-            on_open_collection: cx.listener(|_this, _: &ClickEvent, _window, cx| {
-                crate::actions::spawn_open_collection(cx);
-            }),
-            on_new_collection: cx.listener(|_this, _: &ClickEvent, _window, cx| {
-                crate::actions::spawn_new_collection(cx);
-            }),
-        };
-
-        let editor_callbacks = editor::EditorCallbacks {
-            tab_strip: TabStripCallbacks {
-                on_select: {
-                    let weak = weak.clone();
-                    Rc::new(
-                        move |file: ActiveFile, _window: &mut Window, cx: &mut App| {
-                            let _ = weak.update(cx, |this, cx| {
-                                this.state.switch_tab(file);
-                                cx.notify();
-                            });
-                        },
-                    )
-                },
-                on_close: {
-                    let weak = weak.clone();
-                    Rc::new(
-                        move |file: ActiveFile, _window: &mut Window, cx: &mut App| {
-                            let _ = weak.update(cx, |this, cx| {
-                                if this.state.is_dirty(&file) {
-                                    this.state.overlay = Some(Overlay::ConfirmDiscard(
-                                        ConfirmDiscardKind::CloseTab(file),
-                                    ));
-                                } else {
-                                    this.state.close_tab(&file);
-                                }
-                                cx.notify();
-                            });
-                        },
-                    )
-                },
-            },
-            on_run: {
-                let weak = weak.clone();
-                Rc::new(move |path: PathBuf, _window: &mut Window, cx: &mut App| {
-                    let _ = weak.update(cx, |this, cx| {
-                        let environment = this.state.environment.clone();
-                        execution::spawn_run(path, environment, cx);
-                    });
-                })
-            },
-        };
 
         let show_drawer = self.state.view == View::Workspace
             && (self.state.active_file.is_request()
                 || !matches!(self.state.active_activity(), ActivityResult::Idle));
 
         let viewport: gpui::AnyElement = match self.state.view {
-            View::Home => home::render_home(
-                &self.state,
-                theme,
-                home_callbacks,
-                &self.editor_focus_handle,
-            )
-            .into_any_element(),
+            View::Home => {
+                home::render_home(&self.state, &self.editor_focus_handle, cx).into_any_element()
+            }
             View::Workspace => div()
                 .flex()
                 .flex_1()
                 .min_h(px(0.))
-                .child(sidebar::render_sidebar(
-                    &self.state,
-                    theme,
-                    sidebar_callbacks,
-                ))
+                .child(sidebar::render_sidebar(&self.state, cx))
                 .child(editor::render_editor(
                     &self.state,
-                    theme,
-                    editor_callbacks,
                     self.editor_focus_handle.clone(),
                     cx,
                 ))
                 .into_any_element(),
-        };
-
-        let on_select_subtab: response_drawer::SubtabSelectHandler = {
-            let weak = weak.clone();
-            Rc::new(
-                move |subtab: ResponseSubTab, _window: &mut Window, cx: &mut App| {
-                    let _ = weak.update(cx, |this, cx| {
-                        this.state.response_subtab = subtab;
-                        cx.notify();
-                    });
-                },
-            )
         };
 
         div()
@@ -760,6 +550,7 @@ impl Render for EpistolaGui {
             }))
             .on_action(cx.listener(|this, _: &OpenSettings, _window, cx| this.open_settings(cx)))
             .on_action(cx.listener(|this, _: &GoHome, _window, cx| this.go_home(cx)))
+            .on_action(cx.listener(|this, _: &GoWorkspace, _window, cx| this.go_workspace(cx)))
             .on_action(
                 cx.listener(|this, _: &RunActiveRequest, _window, cx| this.run_active_request(cx)),
             )
@@ -775,42 +566,85 @@ impl Render for EpistolaGui {
             .on_action(cx.listener(|_this, _: &OpenCollection, _window, cx| {
                 crate::actions::spawn_open_collection(cx)
             }))
+            .on_action(cx.listener(|_this, _: &NewCollection, _window, cx| {
+                crate::actions::spawn_new_collection(cx)
+            }))
+            .on_action(cx.listener(|this, _: &OpenEnvironmentPicker, window, cx| {
+                this.open_environment_picker(window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &OpenHistory, window, cx| this.open_history(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &NewRequest, window, cx| {
+                this.start_new_request_prompt(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &RenameRequest, window, cx| {
+                this.start_rename_request_prompt(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &DuplicateRequest, window, cx| {
+                this.start_duplicate_request_prompt(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &DeleteRequest, window, cx| {
+                this.start_delete_request_confirm(window, cx)
+            }))
+            .on_action(cx.listener(|this, action: &OpenRequestFile, _window, cx| {
+                this.state.open_request(action.path.clone());
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, action: &OpenFolderDoc, _window, cx| {
+                this.state.open_folder_doc(action.dir.clone());
+                cx.notify();
+            }))
+            .on_action(
+                cx.listener(|this, action: &OpenEnvironmentDoc, _window, cx| {
+                    this.state.open_environment_doc(action.name.clone());
+                    cx.notify();
+                }),
+            )
+            .on_action(cx.listener(|this, action: &SwitchTab, _window, cx| {
+                this.state.switch_tab(action.file.clone());
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, action: &CloseTab, _window, cx| {
+                this.close_tab_action(action.file.clone(), cx);
+            }))
+            .on_action(cx.listener(|this, action: &SelectEnvironment, window, cx| {
+                this.select_environment(action.name.clone(), window, cx);
+            }))
+            .on_action(
+                cx.listener(|this, action: &OpenRecentCollection, _window, cx| {
+                    this.open_recent_collection(action.path.clone(), cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, action: &SelectResponseSubtab, _window, cx| {
+                    this.state.response_subtab = action.subtab;
+                    cx.notify();
+                }),
+            )
             .on_action(
                 cx.listener(|this, _: &Dismiss, window, cx| this.dismiss_overlay(window, cx)),
             )
-            .child(titlebar::render_titlebar(
-                &self.state,
-                theme,
-                is_fullscreen,
-                titlebar_callbacks,
-            ))
+            .child(titlebar::render_titlebar(&self.state, is_fullscreen, cx))
             .child(
                 div()
                     .flex()
                     .flex_1()
                     .min_h(px(0.))
-                    .child(activity_rail::render_activity_rail(
-                        &self.state,
-                        theme,
-                        rail_callbacks,
-                    ))
+                    .child(activity_rail::render_activity_rail(&self.state, cx))
                     .child(div().flex().flex_1().min_w(px(0.)).child(viewport)),
             )
             .when(show_drawer, |el| {
                 el.child(response_drawer::render_response_drawer(
-                    theme,
                     self.state.active_activity(),
                     self.state.response_subtab,
-                    on_select_subtab,
+                    cx,
                 ))
             })
             .child(statusbar::render_statusbar(&self.state, theme))
             .when_some(self.state.overlay.clone(), |el, overlay| match overlay {
                 Overlay::CommandPalette => {
                     let selected = self.state.overlay_selection(self.overlay_items.len());
-                    let on_dismiss = cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.close_overlay(window, cx)
-                    });
                     el.child(render_palette_overlay(
                         "Type a command…",
                         &self.state.overlay_query,
@@ -818,14 +652,11 @@ impl Render for EpistolaGui {
                         selected,
                         theme,
                         &self.overlay_focus_handle,
-                        on_dismiss,
+                        cx,
                     ))
                 }
                 Overlay::QuickOpen => {
                     let selected = self.state.overlay_selection(self.overlay_items.len());
-                    let on_dismiss = cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.close_overlay(window, cx)
-                    });
                     el.child(render_palette_overlay(
                         "Go to request…",
                         &self.state.overlay_query,
@@ -833,7 +664,7 @@ impl Render for EpistolaGui {
                         selected,
                         theme,
                         &self.overlay_focus_handle,
-                        on_dismiss,
+                        cx,
                     ))
                 }
                 Overlay::EnvironmentPicker => {
@@ -845,14 +676,8 @@ impl Render for EpistolaGui {
                         .unwrap_or_default();
                     let current = self.state.environment.clone();
                     let selected = self.state.overlay_selection(environments.len());
-                    let on_select = {
-                        let weak = weak.clone();
-                        move |name: String, window: &mut Window, cx: &mut App| {
-                            let _ = weak.update(cx, |this, cx| {
-                                this.state.set_environment(name);
-                                this.close_overlay(window, cx);
-                            });
-                        }
+                    let on_select = |name: String, window: &mut Window, cx: &mut App| {
+                        window.dispatch_action(Box::new(SelectEnvironment { name }), cx);
                     };
                     let on_dismiss = cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.close_overlay(window, cx)
@@ -895,54 +720,37 @@ impl Render for EpistolaGui {
                             None,
                         ),
                     };
-                    let on_save: Option<ClickHandler> = save_target.map(|file| {
-                        let weak = weak.clone();
-                        Rc::new(
-                            move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
-                                let _ = weak.update(cx, |this, cx| {
-                                    editor_save::validate_and_save(&mut this.state, &file);
-                                    if !this.state.is_dirty(&file) {
-                                        this.state.close_tab(&file);
-                                        this.state.overlay = None;
-                                    }
-                                    cx.notify();
-                                });
-                            },
-                        ) as ClickHandler
+                    let on_save: Option<_> = save_target.map(|file| {
+                        Box::new(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+                            editor_save::validate_and_save(&mut this.state, &file);
+                            if !this.state.is_dirty(&file) {
+                                this.state.close_tab(&file);
+                                this.state.overlay = None;
+                            }
+                            cx.notify();
+                        })) as crate::components::kit::ClickHandler
                     });
-                    let on_discard = {
-                        let weak = weak.clone();
-                        let kind = kind.clone();
-                        Rc::new(
-                            move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
-                                let _ = weak.update(cx, |this, cx| {
-                                    match &kind {
-                                        ConfirmDiscardKind::CloseTab(file) => {
-                                            this.state.close_tab(file)
-                                        }
-                                        ConfirmDiscardKind::SwitchCollection(path) => {
-                                            this.state.open_collection_at(path.clone())
-                                        }
-                                    }
-                                    this.state.overlay = None;
-                                    cx.notify();
-                                });
-                            },
-                        )
-                    };
-                    let on_cancel: ClickHandler = {
-                        let weak = weak.clone();
-                        Rc::new(
-                            move |_event: &ClickEvent, _window: &mut Window, cx: &mut App| {
-                                let _ = weak.update(cx, |this, cx| {
-                                    this.state.overlay = None;
-                                    cx.notify();
-                                });
-                            },
-                        )
-                    };
+                    let kind_for_discard = kind.clone();
+                    let on_discard = cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+                        match &kind_for_discard {
+                            ConfirmDiscardKind::CloseTab(file) => this.state.close_tab(file),
+                            ConfirmDiscardKind::SwitchCollection(path) => {
+                                this.state.open_collection_at(path.clone())
+                            }
+                        }
+                        this.state.overlay = None;
+                        cx.notify();
+                    });
+                    let on_dismiss = cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                        this.state.overlay = None;
+                        cx.notify();
+                    });
+                    let on_cancel = cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                        this.state.overlay = None;
+                        cx.notify();
+                    });
                     el.child(confirm_discard::render_confirm_discard(
-                        &message, on_save, on_discard, on_cancel, theme,
+                        &message, on_save, on_discard, on_dismiss, on_cancel, theme,
                     ))
                 }
                 Overlay::Prompt(kind) => {
@@ -956,27 +764,16 @@ impl Render for EpistolaGui {
                         PromptKind::Rename { .. } => "Rename",
                         PromptKind::Duplicate { .. } => "Duplicate",
                     };
-                    let on_confirm: ClickHandler = {
-                        let weak = weak.clone();
-                        let kind = kind.clone();
-                        Rc::new(
-                            move |_event: &ClickEvent, window: &mut Window, cx: &mut App| {
-                                let _ = weak.update(cx, |this, cx| {
-                                    this.submit_prompt(kind.clone(), window, cx);
-                                });
-                            },
-                        )
-                    };
-                    let on_cancel: ClickHandler = {
-                        let weak = weak.clone();
-                        Rc::new(
-                            move |_event: &ClickEvent, window: &mut Window, cx: &mut App| {
-                                let _ = weak.update(cx, |this, cx| {
-                                    this.close_overlay(window, cx);
-                                });
-                            },
-                        )
-                    };
+                    let kind_for_confirm = kind.clone();
+                    let on_confirm = cx.listener(move |this, _event: &ClickEvent, window, cx| {
+                        this.submit_prompt(kind_for_confirm.clone(), window, cx);
+                    });
+                    let on_dismiss = cx.listener(|this, _event: &ClickEvent, window, cx| {
+                        this.close_overlay(window, cx);
+                    });
+                    let on_cancel = cx.listener(|this, _event: &ClickEvent, window, cx| {
+                        this.close_overlay(window, cx);
+                    });
                     el.child(render_prompt_modal(
                         title,
                         "Request name…",
@@ -986,6 +783,7 @@ impl Render for EpistolaGui {
                         theme,
                         &self.overlay_focus_handle,
                         on_confirm,
+                        on_dismiss,
                         on_cancel,
                     ))
                 }
@@ -999,32 +797,24 @@ impl Render for EpistolaGui {
                         .map(|r| r.display_name.clone())
                         .unwrap_or_else(|| path.display().to_string());
                     let message = format!("Delete request \"{name}\"? This can't be undone.");
-                    let on_confirm: ClickHandler = {
-                        let weak = weak.clone();
-                        let path = path.clone();
-                        Rc::new(
-                            move |_event: &ClickEvent, window: &mut Window, cx: &mut App| {
-                                let _ = weak.update(cx, |this, cx| {
-                                    this.confirm_delete_request(path.clone(), window, cx);
-                                });
-                            },
-                        )
-                    };
-                    let on_cancel: ClickHandler = {
-                        let weak = weak.clone();
-                        Rc::new(
-                            move |_event: &ClickEvent, window: &mut Window, cx: &mut App| {
-                                let _ = weak.update(cx, |this, cx| {
-                                    this.close_overlay(window, cx);
-                                });
-                            },
-                        )
-                    };
+                    let path_for_confirm = path.clone();
+                    let on_confirm = cx.listener(move |this, _event: &ClickEvent, window, cx| {
+                        this.confirm_delete_request(path_for_confirm.clone(), window, cx);
+                    });
+                    let on_dismiss = cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                        this.state.overlay = None;
+                        cx.notify();
+                    });
+                    let on_cancel = cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                        this.state.overlay = None;
+                        cx.notify();
+                    });
                     el.child(confirm_discard::render_confirm_delete(
                         "Delete request",
                         &message,
                         self.state.overlay_error.as_deref(),
                         on_confirm,
+                        on_dismiss,
                         on_cancel,
                         theme,
                     ))

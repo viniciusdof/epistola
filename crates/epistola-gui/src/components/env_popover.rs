@@ -1,5 +1,3 @@
-use std::rc::Rc;
-
 use gpui::{div, prelude::*, px, App, ClickEvent, FocusHandle, IntoElement, SharedString, Window};
 
 use crate::theme::Theme;
@@ -10,11 +8,9 @@ pub fn render_env_popover(
     selected: usize,
     theme: Theme,
     focus_handle: &FocusHandle,
-    on_select: impl Fn(String, &mut Window, &mut App) + 'static,
+    on_select: impl Fn(String, &mut Window, &mut App) + Clone + 'static,
     on_dismiss: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let on_select = Rc::new(on_select);
-
     div()
         .id("env-popover-backdrop")
         .track_focus(focus_handle)

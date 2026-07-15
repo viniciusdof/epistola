@@ -22,6 +22,8 @@ pub struct Theme {
     pub success: Hsla,
 }
 
+impl gpui::Global for Theme {}
+
 impl Theme {
     pub fn dark() -> Self {
         Self {

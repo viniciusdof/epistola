@@ -26,6 +26,7 @@ use actions::{
 };
 use assets::Assets;
 use root::EpistolaGui;
+use theme::Theme;
 
 fn main() {
     let cwd = env::current_dir().unwrap_or_default();
@@ -33,6 +34,8 @@ fn main() {
     gpui_platform::application()
         .with_assets(Assets)
         .run(move |cx: &mut App| {
+            cx.set_global(Theme::dark());
+
             cx.bind_keys([
                 KeyBinding::new("backspace", Backspace, Some("Editor")),
                 KeyBinding::new("delete", Delete, Some("Editor")),
