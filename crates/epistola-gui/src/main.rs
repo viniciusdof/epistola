@@ -28,14 +28,6 @@ use assets::Assets;
 use root::EpistolaGui;
 
 fn main() {
-    match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => execution::install(runtime),
-        Err(err) => eprintln!("failed to start async runtime, requests won't be sendable: {err}"),
-    }
-
     let cwd = env::current_dir().unwrap_or_default();
 
     gpui_platform::application()

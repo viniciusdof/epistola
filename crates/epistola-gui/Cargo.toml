@@ -20,7 +20,7 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", tag = "v1.10.3"
 epistola-core.workspace = true
 epistola-format.workspace = true
 epistola-engine.workspace = true
-tokio.workspace = true
+async-compat = "0.2.5"
 rust-embed.workspace = true
 time = "0.3.53"
 unicode-segmentation = "1.13.3"

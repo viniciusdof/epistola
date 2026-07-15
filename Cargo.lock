@@ -320,6 +320,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-compat"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1ba85bc55464dcbf728b56d97e119d673f4cf9062be330a9a26f3acf504a590"
+dependencies = [
+ "futures-core",
+ "futures-io",
+ "once_cell",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "async-compression"
 version = "0.4.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1688,6 +1701,7 @@ dependencies = [
 name = "epistola-gui"
 version = "0.1.0"
 dependencies = [
+ "async-compat",
  "epistola-core",
  "epistola-engine",
  "epistola-format",
@@ -1697,7 +1711,6 @@ dependencies = [
  "rust-embed",
  "tempfile",
  "time",
- "tokio",
  "unicode-segmentation",
 ]
 

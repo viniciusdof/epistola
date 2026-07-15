@@ -1,29 +1,15 @@
-//! Bridges GPUI's own foreground executor to the Tokio runtime that
+//! Bridges GPUI's background executor to the Tokio reactor that
 //! `epistola-engine`'s network calls need. GPUI owns `main`, so
-//! `#[tokio::main]` isn't an option — a `Runtime` is built once in `main()`
-//! and stashed here instead.
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
 use epistola_core::InterpolationError;
 use epistola_engine::EngineError;
 use epistola_format::FormatError;
 use gpui::{Context, WeakEntity};
-use tokio::runtime::Runtime;
 
 use crate::root::EpistolaGui;
 use crate::state::{ActiveFile, ActivityResult};
-
-static TOKIO: OnceLock<Runtime> = OnceLock::new();
-
-pub fn install(runtime: Runtime) {
-    let _ = TOKIO.set(runtime);
-}
-
-fn handle() -> Option<tokio::runtime::Handle> {
-    TOKIO.get().map(Runtime::handle).cloned()
-}
 
 pub(crate) fn classify_engine_error(err: EngineError) -> ActivityResult {
     if let EngineError::Format(format_err) = &err {
@@ -48,19 +34,9 @@ pub fn spawn_run(path: PathBuf, environment: Option<String>, cx: &mut Context<Ep
             cx.notify();
         });
 
-        let Some(handle) = handle() else {
-            let _ = weak.update(cx, |this, cx| {
-                this.state.activity.insert(
-                    tab.clone(),
-                    ActivityResult::RunFailed("no async runtime available".into()),
-                );
-                cx.notify();
-            });
-            return;
-        };
-
-        let outcome = handle
-            .spawn(async move {
+        let outcome = cx
+            .background_executor()
+            .spawn(async_compat::Compat::new(async move {
                 let (collection, resolved) = epistola_engine::run::resolve_saved_request(
                     &path,
                     environment.as_deref(),
@@ -74,11 +50,11 @@ pub fn spawn_run(path: PathBuf, environment: Option<String>, cx: &mut Context<Ep
                     &collection.manifest.client,
                 )
                 .await
-            })
+            }))
             .await;
 
         let activity = match outcome {
-            Ok(Ok(outcome)) => ActivityResult::RunSuccess {
+            Ok(outcome) => ActivityResult::RunSuccess {
                 status: outcome.response.status,
                 duration_ms: outcome.response.duration.as_millis(),
                 content_length: outcome.response.body.len(),
@@ -90,8 +66,7 @@ pub fn spawn_run(path: PathBuf, environment: Option<String>, cx: &mut Context<Ep
                     .map(|header| (header.name.clone(), header.value.clone()))
                     .collect(),
             },
-            Ok(Err(engine_err)) => classify_engine_error(engine_err),
-            Err(join_err) => ActivityResult::RunFailed(join_err.to_string()),
+            Err(engine_err) => classify_engine_error(engine_err),
         };
 
         let _ = weak.update(cx, |this, cx| {
