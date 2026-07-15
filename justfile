@@ -14,7 +14,7 @@ hooks-install:
 
 # Format, lint, test, and dependency/license checks — what the lefthook pre-push hook runs.
 [group('quality')]
-check: fmt-check lint test deny
+check: fmt-check lint test deny shear
 
 # Apply rustfmt formatting.
 [group('quality')]
@@ -40,6 +40,11 @@ test:
 [group('quality')]
 deny:
     cargo deny check
+
+# Check for unused workspace dependencies.
+[group('quality')]
+shear:
+    cargo shear
 
 # Line/function/region coverage report.
 [group('coverage')]

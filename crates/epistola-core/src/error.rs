@@ -16,23 +16,6 @@ pub enum ExecutorError {
     Transport(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
-/// Error surface for `AuthProvider` implementations.
-#[derive(Debug, thiserror::Error)]
-pub enum AuthError {
-    #[error("missing credential: {0}")]
-    MissingCredential(String),
-
-    #[error("failed to apply auth: {0}")]
-    Apply(String),
-}
-
-/// Error surface for `ScriptHook` implementations.
-#[derive(Debug, thiserror::Error)]
-pub enum ScriptError {
-    #[error("script execution failed: {0}")]
-    Execution(String),
-}
-
 /// Error surface for `interpolate` / `interpolate_request`.
 #[derive(Debug, thiserror::Error)]
 pub enum InterpolationError {

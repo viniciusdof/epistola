@@ -37,11 +37,9 @@ impl fmt::Display for Method {
     }
 }
 
-impl FromStr for Method {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s.to_ascii_uppercase().as_str() {
+impl From<&str> for Method {
+    fn from(s: &str) -> Self {
+        match s.to_ascii_uppercase().as_str() {
             "GET" => Method::Get,
             "POST" => Method::Post,
             "PUT" => Method::Put,
@@ -51,7 +49,15 @@ impl FromStr for Method {
             "OPTIONS" => Method::Options,
             "QUERY" => Method::Query,
             other => Method::Other(other.to_string()),
-        })
+        }
+    }
+}
+
+impl FromStr for Method {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(s.into())
     }
 }
 
@@ -80,6 +86,15 @@ mod tests {
     fn display_matches_as_str() {
         assert_eq!(Method::Get.to_string(), "GET");
         assert_eq!(Method::Other("FOO".to_string()).to_string(), "FOO");
+    }
+
+    #[test]
+    fn from_str_slice_parses_case_insensitively() {
+        assert_eq!(Method::from("get"), Method::Get);
+        assert_eq!(
+            Method::from("PROPFIND"),
+            Method::Other("PROPFIND".to_string())
+        );
     }
 
     #[test]

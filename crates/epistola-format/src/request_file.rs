@@ -181,9 +181,7 @@ impl RequestFile {
 
     /// Scaffolds a minimal `.req.toml` (name/method/url only).
     pub fn create(path: &Path, name: &str, method: &str, url: &str) -> Result<(), FormatError> {
-        let method = method
-            .parse::<Method>()
-            .unwrap_or_else(|never| match never {});
+        let method = Method::from(method);
         Self::from_request(name, &Request::new(method, url)).create_at(path)
     }
 
@@ -265,11 +263,7 @@ impl RequestFile {
 
     /// Converts to an [`UnresolvedRequest`], dropping disabled headers/query.
     pub fn to_unresolved(&self) -> UnresolvedRequest {
-        let method = self
-            .request
-            .method
-            .parse::<Method>()
-            .unwrap_or_else(|never| match never {});
+        let method = Method::from(self.request.method.as_str());
         let mut request = Request::new(method, &self.request.url);
 
         for q in self.request.query.iter().filter(|q| !q.disabled) {
@@ -1003,7 +997,7 @@ mod tests {
     }
 
     #[test]
-    fn load_reads_a_dot_epi_file_from_disk() {
+    fn load_reads_a_req_toml_file_from_disk() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("get-users.req.toml");
         std::fs::write(

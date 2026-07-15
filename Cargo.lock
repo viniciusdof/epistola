@@ -1637,11 +1637,8 @@ dependencies = [
  "epistola-core",
  "epistola-engine",
  "epistola-format",
- "epistola-http",
  "serde_json",
  "tempfile",
- "thiserror 2.0.18",
- "time",
  "tokio",
  "wiremock",
 ]
@@ -1650,10 +1647,8 @@ dependencies = [
 name = "epistola-core"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "minijinja",
  "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]
@@ -1663,7 +1658,6 @@ dependencies = [
  "epistola-core",
  "epistola-format",
  "epistola-http",
- "reqwest",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
@@ -1708,9 +1702,9 @@ dependencies = [
 name = "epistola-http"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "epistola-core",
  "reqwest",
+ "thiserror 2.0.18",
  "tokio",
  "wiremock",
 ]

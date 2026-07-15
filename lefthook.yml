@@ -15,3 +15,5 @@ pre-push:
       run: mise exec -- just test
     deny:
       run: mise exec -- just deny
+    shear:
+      run: mise exec -- just shear

@@ -22,7 +22,6 @@ epistola-core = { path = "crates/epistola-core" }
 epistola-http = { path = "crates/epistola-http" }
 epistola-format = { path = "crates/epistola-format" }
 epistola-engine = { path = "crates/epistola-engine" }
-async-trait = "0.1.89"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros"] }
 rust-embed = "8.12.0"

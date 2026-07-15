@@ -1,6 +1,6 @@
 [package]
 name = "epistola-format"
-description = "Parses epistola collection/request files (.epi TOML, epistola.toml, environments) into epistola-core types."
+description = "Parses epistola collection/request files (.req.toml, epistola.toml, environments) into epistola-core types."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

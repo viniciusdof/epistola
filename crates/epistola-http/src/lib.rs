@@ -3,8 +3,14 @@
 
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use epistola_core::{ExecutorError, Header, HttpExecutor, Request, Response};
+
+/// Failure building a `reqwest::Client` (invalid proxy URL, malformed PEM
+/// identity, ...). Distinct from `ExecutorError`, which covers failures
+/// *executing* a request against an already-built client.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct BuildError(#[from] reqwest::Error);
 
 #[derive(Debug, Clone, Default)]
 pub struct ReqwestExecutor {
@@ -51,7 +57,7 @@ impl ReqwestExecutor {
         Self { client }
     }
 
-    pub fn with_config(config: ClientConfig) -> Result<Self, reqwest::Error> {
+    pub fn with_config(config: ClientConfig) -> Result<Self, BuildError> {
         let mut builder = reqwest::Client::builder();
 
         if let Some(timeout) = config.timeout {
@@ -95,7 +101,6 @@ fn map_transport_error(err: reqwest::Error, elapsed: Duration) -> ExecutorError 
     }
 }
 
-#[async_trait]
 impl HttpExecutor for ReqwestExecutor {
     async fn execute(&self, request: &Request) -> Result<Response, ExecutorError> {
         let method = reqwest::Method::from_bytes(request.method.as_str().as_bytes())

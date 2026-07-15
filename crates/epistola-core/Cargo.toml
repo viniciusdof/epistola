@@ -1,6 +1,6 @@
 [package]
 name = "epistola-core"
-description = "Core domain types and traits for epistola: Request, Response, and the extension points (HttpExecutor, AuthProvider, VariableResolver, ScriptHook) other crates implement."
+description = "Core domain types and traits for epistola: Request, Response, and the extension points (HttpExecutor, VariableResolver) other crates implement."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,12 +9,8 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
-async-trait.workspace = true
 thiserror.workspace = true
 minijinja = { version = "2", default-features = false, features = ["std_collections", "serde"] }
-
-[dev-dependencies]
-tokio.workspace = true
 
 [lints]
 workspace = true

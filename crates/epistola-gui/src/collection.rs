@@ -60,14 +60,6 @@ impl FolderEntry {
     }
 }
 
-/// `Method::from_str` is `Infallible` (unknown verbs become `Method::Other`).
-fn parse_method(raw: &str) -> Method {
-    match raw.parse::<Method>() {
-        Ok(method) => method,
-        Err(never) => match never {},
-    }
-}
-
 fn insert_request(root: &mut FolderEntry, dir: &Path, entry: RequestEntry) {
     let mut current = root;
     let mut rel_accum = PathBuf::new();
@@ -126,7 +118,7 @@ pub fn load(cwd: &Path) -> Result<CollectionTree, EngineError> {
             rel_path: rel_path.clone(),
             file_name,
             display_name: file.request.name.clone(),
-            method: parse_method(&file.request.method),
+            method: Method::from(file.request.method.as_str()),
         };
         insert_request(&mut root_folder, dir, entry);
     }

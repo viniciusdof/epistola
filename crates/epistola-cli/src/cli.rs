@@ -99,11 +99,7 @@ impl Cli {
     /// `epistola_engine::adhoc` builds from — the only place httpie-style
     /// `NAME:VALUE`/`KEY=VALUE` string parsing happens.
     pub fn to_adhoc_request(&self) -> Result<AdHocRequest> {
-        // Method::from_str is Infallible, so this can never actually fail.
-        let method = self
-            .method
-            .parse::<epistola_core::Method>()
-            .unwrap_or_else(|never| match never {});
+        let method = epistola_core::Method::from(self.method.as_str());
 
         let mut headers = Vec::new();
         for raw in &self.headers {

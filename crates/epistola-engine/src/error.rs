@@ -21,7 +21,7 @@ pub enum EngineError {
     Executor(#[from] ExecutorError),
 
     #[error("invalid client configuration: {0}")]
-    ClientBuild(#[from] reqwest::Error),
+    ClientBuild(#[from] epistola_http::BuildError),
 
     #[error("failed to read '{path}': {source}")]
     Io {
