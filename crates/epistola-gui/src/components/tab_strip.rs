@@ -61,12 +61,21 @@ fn tab_text(state: &AppState, file: &ActiveFile) -> SharedString {
 pub fn render_tab_strip(state: &AppState, cx: &mut Context<EpistolaGui>) -> impl IntoElement {
     let theme = *cx.global::<Theme>();
     div()
+        .flex_none()
+        .w_full()
+        .overflow_x_hidden()
+        .border_b_1()
+        .border_color(theme.border)
+        .child(render_tabs(state, theme))
+}
+
+fn render_tabs(state: &AppState, theme: Theme) -> impl IntoElement {
+    div()
         .id("tab-strip")
         .flex()
         .flex_none()
+        .min_w(px(0.))
         .overflow_x_scroll()
-        .border_b_1()
-        .border_color(theme.border)
         .children(state.open_tabs.iter().map(|file| {
             let active = file == &state.active_file;
             let select_file = file.clone();

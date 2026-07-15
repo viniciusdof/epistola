@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use gpui::{div, prelude::*, px, Context, FocusHandle, IntoElement, MouseButton};
+use gpui::{div, prelude::*, px, Context, FocusHandle, IntoElement, MouseButton, Pixels};
 
 use crate::actions::RunActiveRequest;
 use crate::components::editor_text::EditorTextElement;
@@ -254,6 +254,7 @@ fn render_save_error(message: &str, theme: Theme) -> impl IntoElement {
 pub fn render_editor(
     state: &AppState,
     focus_handle: FocusHandle,
+    max_width: Pixels,
     cx: &mut Context<EpistolaGui>,
 ) -> impl IntoElement {
     let theme = *cx.global::<Theme>();
@@ -334,6 +335,8 @@ pub fn render_editor(
         .flex_col()
         .flex_1()
         .min_w(px(0.))
+        .max_w(max_width)
+        .overflow_x_hidden()
         .child(tab_strip::render_tab_strip(state, cx))
         .when_some(active_request_path, |el, path| {
             el.child(render_preview_row(state, theme, &path))

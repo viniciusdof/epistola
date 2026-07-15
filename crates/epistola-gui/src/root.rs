@@ -606,17 +606,28 @@ impl Render for EpistolaGui {
             View::Home => {
                 home::render_home(&self.state, &self.editor_focus_handle, cx).into_any_element()
             }
-            View::Workspace => div()
-                .flex()
-                .flex_1()
-                .min_h(px(0.))
-                .child(sidebar::render_sidebar(&self.state, cx))
-                .child(editor::render_editor(
-                    &self.state,
-                    self.editor_focus_handle.clone(),
-                    cx,
-                ))
-                .into_any_element(),
+            View::Workspace => {
+                let editor_max_width = window.viewport_size().width
+                    - sidebar::SIDEBAR_WIDTH
+                    - activity_rail::RAIL_WIDTH;
+                let editor_max_width = if editor_max_width < px(0.) {
+                    px(0.)
+                } else {
+                    editor_max_width
+                };
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .child(sidebar::render_sidebar(&self.state, cx))
+                    .child(editor::render_editor(
+                        &self.state,
+                        self.editor_focus_handle.clone(),
+                        editor_max_width,
+                        cx,
+                    ))
+                    .into_any_element()
+            }
         };
 
         div()

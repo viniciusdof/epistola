@@ -1,10 +1,12 @@
-use gpui::{div, prelude::*, px, Context, IntoElement};
+use gpui::{div, prelude::*, px, Context, IntoElement, Pixels};
 
 use crate::actions::{GoHome, GoWorkspace, OpenEnvironmentPicker, OpenHistory, OpenSettings};
 use crate::components::kit::{dispatch_on_click, IconName, RailButton};
 use crate::root::EpistolaGui;
 use crate::state::{ActiveFile, AppState, View};
 use crate::theme::Theme;
+
+pub const RAIL_WIDTH: Pixels = px(44.);
 
 pub fn render_activity_rail(state: &AppState, cx: &mut Context<EpistolaGui>) -> impl IntoElement {
     let theme = *cx.global::<Theme>();
@@ -17,7 +19,7 @@ pub fn render_activity_rail(state: &AppState, cx: &mut Context<EpistolaGui>) -> 
         .flex_col()
         .items_center()
         .gap(px(4.))
-        .w(px(44.))
+        .w(RAIL_WIDTH)
         .py(px(10.))
         .border_r_1()
         .border_color(theme.border)

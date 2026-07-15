@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use gpui::{div, prelude::*, px, uniform_list, Context, IntoElement, SharedString};
+use gpui::{div, prelude::*, px, uniform_list, Context, IntoElement, Pixels, SharedString};
 
 use crate::actions::{OpenEnvironmentDoc, OpenFolderDoc, OpenRequestFile, OpenSettings};
 use crate::collection::{CollectionTree, FolderEntry, RequestEntry};
@@ -8,6 +8,8 @@ use crate::components::kit::{dispatch_on_click, icon, IconName, MethodTag};
 use crate::root::EpistolaGui;
 use crate::state::{ActiveFile, AppState};
 use crate::theme::Theme;
+
+pub const SIDEBAR_WIDTH: Pixels = px(216.);
 
 const ROW_HEIGHT: f32 = 24.;
 
@@ -293,7 +295,7 @@ pub fn render_sidebar(state: &AppState, cx: &mut Context<EpistolaGui>) -> impl I
         .flex()
         .flex_col()
         .flex_none()
-        .w(px(216.))
+        .w(SIDEBAR_WIDTH)
         .py(px(10.))
         .border_r_1()
         .border_color(theme.border)
