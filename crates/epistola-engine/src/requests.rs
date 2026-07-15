@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use epistola_core::Method;
 use epistola_format::{LoadedCollection, RequestFile};
 
 use crate::discovery::discover_collection;
@@ -31,7 +32,10 @@ pub fn slugify(name: &str) -> String {
     }
 }
 
-/// Recursively finds every `*.req.toml` file under `root`.
+/// Recursively finds every `*.req.toml` file under `root`. Skips any
+/// directory whose name starts with `.` (covers `.git`, `.epistola`) —
+/// requests never live in hidden directories, this is a contract of the
+/// file format, not an optimization.
 pub fn find_request_files(root: &Path) -> Result<Vec<PathBuf>, EngineError> {
     let mut found = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -48,7 +52,13 @@ pub fn find_request_files(root: &Path) -> Result<Vec<PathBuf>, EngineError> {
             })?;
             let path = entry.path();
             if path.is_dir() {
-                stack.push(path);
+                let is_hidden = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with('.'));
+                if !is_hidden {
+                    stack.push(path);
+                }
             } else if path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -60,6 +70,61 @@ pub fn find_request_files(root: &Path) -> Result<Vec<PathBuf>, EngineError> {
     }
 
     Ok(found)
+}
+
+/// One request file that parsed successfully.
+#[derive(Clone, Debug)]
+pub struct RequestSummary {
+    pub abs_path: PathBuf,
+    pub rel_path: PathBuf,
+    pub name: String,
+    pub method: Method,
+    pub url: String,
+}
+
+/// One request file that failed to parse.
+#[derive(Clone, Debug)]
+pub struct InvalidRequestFile {
+    pub abs_path: PathBuf,
+    pub error: String,
+}
+
+pub struct RequestListing {
+    /// Ordered by `rel_path`.
+    pub requests: Vec<RequestSummary>,
+    pub invalid: Vec<InvalidRequestFile>,
+}
+
+/// Enumerates every request in the collection. A file that fails to parse
+/// is reported in `invalid` instead of failing the whole listing — a
+/// caller that wants "fail on the first bad file" is `lint_collection`.
+pub fn list_requests(collection: &LoadedCollection) -> Result<RequestListing, EngineError> {
+    let mut paths = find_request_files(&collection.root)?;
+    paths.sort();
+
+    let mut requests = Vec::new();
+    let mut invalid = Vec::new();
+    for path in paths {
+        let rel_path = path
+            .strip_prefix(&collection.root)
+            .unwrap_or(&path)
+            .to_path_buf();
+        match RequestFile::load(&path) {
+            Ok(file) => requests.push(RequestSummary {
+                abs_path: path,
+                rel_path,
+                name: file.request.name,
+                method: Method::from(file.request.method.as_str()),
+                url: file.request.url,
+            }),
+            Err(err) => invalid.push(InvalidRequestFile {
+                abs_path: path,
+                error: err.to_string(),
+            }),
+        }
+    }
+
+    Ok(RequestListing { requests, invalid })
 }
 
 pub struct LintIssue {
@@ -197,6 +262,67 @@ mod tests {
 
         let found = find_request_files(dir.path()).unwrap();
         assert_eq!(found, vec![dir.path().join("users/list.req.toml")]);
+    }
+
+    #[test]
+    fn find_request_files_skips_hidden_directories() {
+        let dir = tempdir().unwrap();
+        write(dir.path(), ".git/hooks/pre-commit.req.toml", "");
+        write(dir.path(), ".epistola/cache.req.toml", "");
+        write(dir.path(), "a.req.toml", "");
+
+        let found = find_request_files(dir.path()).unwrap();
+        assert_eq!(found, vec![dir.path().join("a.req.toml")]);
+    }
+
+    #[test]
+    fn list_requests_reports_valid_files_ordered_by_rel_path() {
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        RequestFile::create(
+            &dir.path().join("b.req.toml"),
+            "B",
+            "POST",
+            "https://y.test",
+        )
+        .unwrap();
+        RequestFile::create(&dir.path().join("a.req.toml"), "A", "GET", "https://x.test").unwrap();
+
+        let collection = LoadedCollection::discover_from(dir.path()).unwrap();
+        let listing = list_requests(&collection).unwrap();
+
+        assert!(listing.invalid.is_empty());
+        let rel_paths: Vec<_> = listing
+            .requests
+            .iter()
+            .map(|r| r.rel_path.clone())
+            .collect();
+        assert_eq!(
+            rel_paths,
+            vec![PathBuf::from("a.req.toml"), PathBuf::from("b.req.toml")]
+        );
+        assert_eq!(listing.requests[0].method, Method::Get);
+    }
+
+    #[test]
+    fn list_requests_reports_an_invalid_file_instead_of_failing_the_listing() {
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        RequestFile::create(
+            &dir.path().join("ok.req.toml"),
+            "OK",
+            "GET",
+            "https://x.test",
+        )
+        .unwrap();
+        write(dir.path(), "bad.req.toml", "not valid toml {{{");
+
+        let collection = LoadedCollection::discover_from(dir.path()).unwrap();
+        let listing = list_requests(&collection).unwrap();
+
+        assert_eq!(listing.requests.len(), 1);
+        assert_eq!(listing.invalid.len(), 1);
+        assert_eq!(listing.invalid[0].abs_path, dir.path().join("bad.req.toml"));
     }
 
     #[test]

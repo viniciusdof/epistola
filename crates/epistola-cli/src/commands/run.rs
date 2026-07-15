@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Args;
+use epistola_engine::history::LoggedResponse;
 use epistola_engine::run::{execute_and_log, parse_var_overrides, resolve_saved_request};
 use epistola_engine::EngineError;
 
@@ -81,9 +82,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
     } else if args.json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&epistola_engine::output::response_to_json(
-                &outcome.response
-            ))?
+            serde_json::to_string_pretty(&LoggedResponse::from(&outcome.response))?
         );
     } else {
         print!("{}", output::format_response(&outcome.response));

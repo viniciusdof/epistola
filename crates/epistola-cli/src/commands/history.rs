@@ -3,8 +3,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use epistola_engine::discovery::discover_collection;
-use epistola_engine::history;
-use serde_json::Value;
+use epistola_engine::history::{self, HistoryEntry};
 
 #[derive(Args, Debug)]
 pub struct HistoryArgs {
@@ -58,18 +57,7 @@ fn list(args: ListArgs, cwd: &Path) -> Result<()> {
     }
 
     if args.json {
-        let json: Vec<Value> = entries
-            .iter()
-            .enumerate()
-            .map(|(i, entry)| {
-                let mut entry = entry.clone();
-                if let Some(obj) = entry.as_object_mut() {
-                    obj.insert("index".to_string(), serde_json::json!(i + 1));
-                }
-                entry
-            })
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&json)?);
+        println!("{}", serde_json::to_string_pretty(&entries)?);
     } else if entries.is_empty() {
         println!("No history recorded in this collection.");
     } else {
@@ -111,66 +99,31 @@ fn clear(_args: ClearArgs, cwd: &Path) -> Result<()> {
     Ok(())
 }
 
-fn format_entry_summary(index: usize, entry: &Value) -> String {
-    let timestamp = entry.get("timestamp").and_then(Value::as_str).unwrap_or("");
-    let method = entry["request"]
-        .get("method")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let url = entry["request"]
-        .get("url")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let status = entry["response"]
-        .get("status")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let duration_ms = entry["response"]
-        .get("duration_ms")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    format!("{index:>3}  {timestamp}  {method} {url}  {status} ({duration_ms}ms)")
+fn format_entry_summary(index: usize, entry: &HistoryEntry) -> String {
+    format!(
+        "{:>3}  {}  {} {}  {} ({}ms)",
+        index,
+        entry.timestamp,
+        entry.request.method,
+        entry.request.url,
+        entry.response.status,
+        entry.response.duration_ms
+    )
 }
 
-/// Walks the entry's known JSON shape directly rather than reconstructing
-/// typed `epistola_core::Request`/`Response` values to reuse `output.rs`'s
-/// formatters — round-tripping JSON back into those types (re-parsing
-/// `Method`, rebuilding `Header` vecs, `duration_ms` back into a
-/// `Duration`) would be more code and more failure modes than this.
-fn format_entry_text(entry: &Value) -> String {
-    let request = &entry["request"];
-    let response = &entry["response"];
+fn format_entry_text(entry: &HistoryEntry) -> String {
     let mut out = String::new();
+    out.push_str(&format!("{}\n", entry.timestamp));
+    out.push_str(&format!("{} {}\n", entry.request.method, entry.request.url));
 
-    let timestamp = entry.get("timestamp").and_then(Value::as_str).unwrap_or("");
-    out.push_str(&format!("{timestamp}\n"));
-
-    let method = request.get("method").and_then(Value::as_str).unwrap_or("");
-    let url = request.get("url").and_then(Value::as_str).unwrap_or("");
-    out.push_str(&format!("{method} {url}\n"));
-
-    for q in request
-        .get("query")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let name = q.get("name").and_then(Value::as_str).unwrap_or("");
-        let value = q.get("value").and_then(Value::as_str).unwrap_or("");
-        out.push_str(&format!("  ?{name}={value}\n"));
+    for q in &entry.request.query {
+        out.push_str(&format!("  ?{}={}\n", q.name, q.value));
     }
-    for h in request
-        .get("headers")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let name = h.get("name").and_then(Value::as_str).unwrap_or("");
-        let value = h.get("value").and_then(Value::as_str).unwrap_or("");
-        out.push_str(&format!("{name}: {value}\n"));
+    for h in &entry.request.headers {
+        out.push_str(&format!("{}: {}\n", h.name, h.value));
     }
     out.push('\n');
-    if let Some(body) = request.get("body").and_then(Value::as_str) {
+    if let Some(body) = &entry.request.body {
         if !body.is_empty() {
             out.push_str(body);
             out.push('\n');
@@ -178,24 +131,15 @@ fn format_entry_text(entry: &Value) -> String {
     }
     out.push('\n');
 
-    let status = response.get("status").and_then(Value::as_u64).unwrap_or(0);
-    let duration_ms = response
-        .get("duration_ms")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    out.push_str(&format!("HTTP {status} ({duration_ms}ms)\n"));
-    for h in response
-        .get("headers")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let name = h.get("name").and_then(Value::as_str).unwrap_or("");
-        let value = h.get("value").and_then(Value::as_str).unwrap_or("");
-        out.push_str(&format!("{name}: {value}\n"));
+    out.push_str(&format!(
+        "HTTP {} ({}ms)\n",
+        entry.response.status, entry.response.duration_ms
+    ));
+    for h in &entry.response.headers {
+        out.push_str(&format!("{}: {}\n", h.name, h.value));
     }
     out.push('\n');
-    if let Some(body) = response.get("body").and_then(Value::as_str) {
+    if let Some(body) = &entry.response.body {
         out.push_str(body);
         out.push('\n');
     }
@@ -342,13 +286,13 @@ mod tests {
 
     #[test]
     fn format_entry_summary_includes_method_url_and_status() {
-        let entry = serde_json::json!({
-            "timestamp": "2026-01-01T00:00:00Z",
-            "request": {"method": "GET", "url": "https://x.test"},
-            "response": {"status": 200, "duration_ms": 5},
-        });
-        let out = format_entry_summary(1, &entry);
-        assert!(out.contains("GET https://x.test"));
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        seed_entry(dir.path());
+        let entry = &history::read_entries(dir.path()).unwrap()[0];
+
+        let out = format_entry_summary(1, entry);
+        assert!(out.contains("GET https://x.test/users"));
         assert!(out.contains("200"));
     }
 }

@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Args, Subcommand};
+use epistola_engine::discovery::discover_collection;
 use epistola_engine::environments;
 
 #[derive(Args, Debug)]
@@ -76,7 +77,8 @@ pub fn run(args: EnvArgs, cwd: &Path) -> Result<()> {
 }
 
 fn new(args: NewArgs, cwd: &Path) -> Result<()> {
-    let path = environments::new_environment(cwd, &args.name)
+    let collection = discover_collection(cwd)?;
+    let path = environments::new_environment(&collection, &args.name)
         .with_context(|| format!("failed to create environment '{}'", args.name))?;
     println!("Created {}", path.display());
     Ok(())
@@ -90,7 +92,8 @@ fn set(args: SetArgs, cwd: &Path) -> Result<()> {
         )
     })?;
 
-    let path = environments::set_variable(cwd, &args.name, key, value, args.secret)
+    let collection = discover_collection(cwd)?;
+    let path = environments::set_variable(&collection, &args.name, key, value, args.secret)
         .with_context(|| format!("failed to set '{key}' in environment '{}'", args.name))?;
 
     println!("Set {key} in {}", path.display());
@@ -98,7 +101,8 @@ fn set(args: SetArgs, cwd: &Path) -> Result<()> {
 }
 
 fn list(args: ListArgs, cwd: &Path) -> Result<()> {
-    let names = environments::list_environment_names(cwd)?;
+    let collection = discover_collection(cwd)?;
+    let names = environments::list_environment_names(&collection)?;
 
     if args.json {
         let json: Vec<_> = names
@@ -118,14 +122,16 @@ fn list(args: ListArgs, cwd: &Path) -> Result<()> {
 }
 
 fn delete(args: DeleteArgs, cwd: &Path) -> Result<()> {
-    environments::delete(cwd, &args.name)
+    let collection = discover_collection(cwd)?;
+    environments::delete(&collection, &args.name)
         .with_context(|| format!("failed to delete environment '{}'", args.name))?;
     println!("Deleted environment '{}'", args.name);
     Ok(())
 }
 
 fn rename(args: RenameArgs, cwd: &Path) -> Result<()> {
-    environments::rename(cwd, &args.name, &args.new_name).with_context(|| {
+    let collection = discover_collection(cwd)?;
+    environments::rename(&collection, &args.name, &args.new_name).with_context(|| {
         format!(
             "failed to rename environment '{}' to '{}'",
             args.name, args.new_name
@@ -136,15 +142,16 @@ fn rename(args: RenameArgs, cwd: &Path) -> Result<()> {
 }
 
 fn default(args: DefaultArgs, cwd: &Path) -> Result<()> {
+    let collection = discover_collection(cwd)?;
     let Some(name) = args.name else {
-        match environments::get_default(cwd)? {
+        match environments::get_default(&collection) {
             Some(name) => println!("{name}"),
             None => println!("No default environment set."),
         }
         return Ok(());
     };
 
-    environments::set_default(cwd, &name)
+    environments::set_default(&collection, &name)
         .with_context(|| format!("failed to set default environment to '{name}'"))?;
 
     println!("Default environment set to '{name}'");

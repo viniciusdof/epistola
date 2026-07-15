@@ -52,23 +52,7 @@ fn format_text_body(text: &str, headers: &[Header]) -> String {
 
 /// Like `format_response`, but for a request that hasn't been sent yet.
 pub fn format_request(request: &Request) -> String {
-    let mut out = format!("{} {}\n", request.method, request.url);
-
-    for (key, value) in &request.query {
-        out.push_str(&format!("  ?{key}={value}\n"));
-    }
-    for header in &request.headers {
-        out.push_str(&format!("{}: {}\n", header.name, header.value));
-    }
-    out.push('\n');
-
-    match std::str::from_utf8(request.body.as_bytes()) {
-        Ok(text) if !text.is_empty() => out.push_str(text),
-        Ok(_) => {}
-        Err(_) => out.push_str(&format!("<{} bytes of binary data>", request.body.len())),
-    }
-    out.push('\n');
-    out
+    epistola_engine::output::format_request_text(request)
 }
 
 #[cfg(test)]
@@ -151,7 +135,7 @@ mod tests {
             .body(Body::text("payload"));
         let out = format_request(&request);
         assert!(out.starts_with("POST https://x.test/users"));
-        assert!(out.contains("?page=1"));
+        assert!(out.contains("page = 1"));
         assert!(out.contains("Authorization: Bearer abc"));
         assert!(out.contains("payload"));
     }

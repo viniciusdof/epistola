@@ -1,12 +1,11 @@
+use epistola_engine::history::HistoryEntry;
 use gpui::{div, prelude::*, px, App, ClickEvent, FocusHandle, IntoElement, SharedString, Window};
-use serde_json::Value;
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 use crate::theme::Theme;
 
 pub fn render_history_modal(
-    entries: &[Value],
+    entries: &[HistoryEntry],
     selected: usize,
     theme: Theme,
     focus_handle: &FocusHandle,
@@ -92,24 +91,12 @@ pub fn render_history_modal(
         )
 }
 
-fn render_row(entry: &Value, theme: Theme, is_selected: bool) -> impl IntoElement {
-    let method = entry["request"]
-        .get("method")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let url = entry["request"]
-        .get("url")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let status = entry["response"]
-        .get("status")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let duration_ms = entry["response"]
-        .get("duration_ms")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let timestamp = entry.get("timestamp").and_then(Value::as_str).unwrap_or("");
+fn render_row(entry: &HistoryEntry, theme: Theme, is_selected: bool) -> impl IntoElement {
+    let method = entry.request.method.as_str();
+    let url = entry.request.url.as_str();
+    let status = entry.response.status;
+    let duration_ms = entry.response.duration_ms;
+    let timestamp = entry.timestamp;
 
     let status_color = if (200..400).contains(&status) {
         theme.success
@@ -176,10 +163,7 @@ fn render_row(entry: &Value, theme: Theme, is_selected: bool) -> impl IntoElemen
         )
 }
 
-fn relative_time(rfc3339: &str) -> String {
-    let Ok(then) = OffsetDateTime::parse(rfc3339, &Rfc3339) else {
-        return String::new();
-    };
+fn relative_time(then: OffsetDateTime) -> String {
     let elapsed = OffsetDateTime::now_utc() - then;
     let minutes = elapsed.whole_minutes();
     if minutes < 1 {

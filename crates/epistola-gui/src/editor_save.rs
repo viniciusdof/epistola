@@ -164,6 +164,7 @@ mod tests {
             requests: Vec::new(),
             environments: vec!["dev".to_string()],
             default_environment: None,
+            index: Default::default(),
         });
 
         validate_and_save(&mut state, &file);

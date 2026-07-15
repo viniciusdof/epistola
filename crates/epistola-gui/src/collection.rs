@@ -1,11 +1,11 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use epistola_core::Method;
 use epistola_engine::discovery::discover_collection;
 use epistola_engine::environments::list_environment_names;
-use epistola_engine::requests::find_request_files;
+use epistola_engine::requests::list_requests;
 use epistola_engine::EngineError;
-use epistola_format::RequestFile;
 
 #[derive(Clone, Debug)]
 pub struct RequestEntry {
@@ -33,30 +33,16 @@ pub struct CollectionTree {
     pub requests: Vec<RequestEntry>,
     pub environments: Vec<String>,
     pub default_environment: Option<String>,
+    pub(crate) index: BTreeMap<PathBuf, RequestEntry>,
 }
 
 impl CollectionTree {
     pub fn all_requests(&self) -> Vec<&RequestEntry> {
-        let mut out: Vec<&RequestEntry> = self.requests.iter().collect();
-        for folder in &self.folders {
-            folder.collect_requests(&mut out);
-        }
-        out
+        self.index.values().collect()
     }
 
     pub fn find_request(&self, abs_path: &Path) -> Option<&RequestEntry> {
-        self.all_requests()
-            .into_iter()
-            .find(|r| r.abs_path == abs_path)
-    }
-}
-
-impl FolderEntry {
-    fn collect_requests<'a>(&'a self, out: &mut Vec<&'a RequestEntry>) {
-        out.extend(self.requests.iter());
-        for child in &self.folders {
-            child.collect_requests(out);
-        }
+        self.index.get(abs_path)
     }
 }
 
@@ -94,37 +80,38 @@ fn mark_folder_toml_presence(collection_root: &Path, folder: &mut FolderEntry) {
 
 /// Files that fail to parse are skipped rather than failing the whole tree
 /// — one bad `.req.toml` shouldn't lock a user out of every other request.
+/// (`list_requests` also reports them typed as `invalid`; surfacing those in
+/// the sidebar instead of dropping them is a follow-up.)
 pub fn load(cwd: &Path) -> Result<CollectionTree, EngineError> {
     let collection = discover_collection(cwd)?;
-    let mut paths = find_request_files(&collection.root)?;
-    paths.sort();
+    let listing = list_requests(&collection)?;
 
     let mut root_folder = FolderEntry::default();
-    for path in paths {
-        let Ok(file) = RequestFile::load(&path) else {
-            continue;
-        };
-        let rel_path = path
-            .strip_prefix(&collection.root)
-            .unwrap_or(&path)
-            .to_path_buf();
-        let file_name = rel_path
+    let mut index = BTreeMap::new();
+    for summary in listing.requests {
+        let file_name = summary
+            .rel_path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let dir = rel_path.parent().unwrap_or(Path::new(""));
+        let dir = summary
+            .rel_path
+            .parent()
+            .unwrap_or(Path::new(""))
+            .to_path_buf();
         let entry = RequestEntry {
-            abs_path: path,
-            rel_path: rel_path.clone(),
+            abs_path: summary.abs_path,
+            rel_path: summary.rel_path,
             file_name,
-            display_name: file.request.name.clone(),
-            method: Method::from(file.request.method.as_str()),
+            display_name: summary.name,
+            method: summary.method,
         };
-        insert_request(&mut root_folder, dir, entry);
+        index.insert(entry.abs_path.clone(), entry.clone());
+        insert_request(&mut root_folder, &dir, entry);
     }
     mark_folder_toml_presence(&collection.root, &mut root_folder);
 
-    let environments = list_environment_names(cwd)
+    let environments = list_environment_names(&collection)
         .map(|set| set.into_iter().collect())
         .unwrap_or_default();
 
@@ -135,5 +122,6 @@ pub fn load(cwd: &Path) -> Result<CollectionTree, EngineError> {
         requests: root_folder.requests,
         environments,
         default_environment: collection.manifest.default_environment.clone(),
+        index,
     })
 }

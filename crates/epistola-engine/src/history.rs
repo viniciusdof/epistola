@@ -1,10 +1,83 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use epistola_core::{Request, Response};
+use serde::{Deserialize, Serialize};
+
+use epistola_core::{Header, Request, Response};
 
 use crate::error::EngineError;
-use crate::output::{request_to_json, response_to_json};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoggedPair {
+    pub name: String,
+    pub value: String,
+}
+
+impl From<&Header> for LoggedPair {
+    fn from(header: &Header) -> Self {
+        LoggedPair {
+            name: header.name.clone(),
+            value: header.value.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoggedRequest {
+    pub method: String,
+    pub url: String,
+    pub query: Vec<LoggedPair>,
+    pub headers: Vec<LoggedPair>,
+    pub body: Option<String>,
+}
+
+impl From<&Request> for LoggedRequest {
+    fn from(request: &Request) -> Self {
+        LoggedRequest {
+            method: request.method.as_str().to_string(),
+            url: request.url.clone(),
+            query: request
+                .query
+                .iter()
+                .map(|(name, value)| LoggedPair {
+                    name: name.clone(),
+                    value: value.clone(),
+                })
+                .collect(),
+            headers: request.headers.iter().map(LoggedPair::from).collect(),
+            body: std::str::from_utf8(request.body.as_bytes())
+                .ok()
+                .map(str::to_string),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoggedResponse {
+    pub status: u16,
+    pub duration_ms: u128,
+    pub headers: Vec<LoggedPair>,
+    pub body: Option<String>,
+}
+
+impl From<&Response> for LoggedResponse {
+    fn from(response: &Response) -> Self {
+        LoggedResponse {
+            status: response.status,
+            duration_ms: response.duration.as_millis(),
+            headers: response.headers.iter().map(LoggedPair::from).collect(),
+            body: response.body_as_str().ok().map(str::to_string),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    #[serde(with = "time::serde::rfc3339")]
+    pub timestamp: time::OffsetDateTime,
+    pub request: LoggedRequest,
+    pub response: LoggedResponse,
+}
 
 /// Path to a collection's history log, relative to its root. Created
 /// lazily on the first [`append_entry`] call — `epistola init` only
@@ -28,11 +101,11 @@ pub fn append_entry(
         })?;
     }
 
-    let entry = serde_json::json!({
-        "timestamp": now_rfc3339(),
-        "request": request_to_json(request),
-        "response": response_to_json(response),
-    });
+    let entry = HistoryEntry {
+        timestamp: time::OffsetDateTime::now_utc(),
+        request: LoggedRequest::from(request),
+        response: LoggedResponse::from(response),
+    };
 
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -49,7 +122,7 @@ pub fn append_entry(
 /// Reads back every logged entry, most-recent-first (`entries[0]` is the
 /// last request run — the index `history show` calls "1"). An empty `Vec`
 /// if the log doesn't exist yet.
-pub fn read_entries(collection_root: &Path) -> Result<Vec<serde_json::Value>, EngineError> {
+pub fn read_entries(collection_root: &Path) -> Result<Vec<HistoryEntry>, EngineError> {
     let path = log_path(collection_root);
     if !path.is_file() {
         return Ok(Vec::new());
@@ -63,7 +136,7 @@ pub fn read_entries(collection_root: &Path) -> Result<Vec<serde_json::Value>, En
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(serde_json::from_str)
-        .collect::<Result<Vec<serde_json::Value>, _>>()?;
+        .collect::<Result<Vec<HistoryEntry>, _>>()?;
     entries.reverse();
     Ok(entries)
 }
@@ -75,12 +148,6 @@ pub fn clear(collection_root: &Path) -> Result<(), EngineError> {
         std::fs::remove_file(&path).map_err(|source| EngineError::Io { path, source })?;
     }
     Ok(())
-}
-
-fn now_rfc3339() -> String {
-    time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -144,8 +211,8 @@ mod tests {
 
         let entries = read_entries(dir.path()).unwrap();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0]["request"]["url"], "https://x.test/second");
-        assert_eq!(entries[1]["request"]["url"], "https://x.test/first");
+        assert_eq!(entries[0].request.url, "https://x.test/second");
+        assert_eq!(entries[1].request.url, "https://x.test/first");
     }
 
     #[test]
@@ -178,8 +245,8 @@ mod tests {
         append_entry(dir.path(), &request(), &response()).unwrap();
 
         let entries = read_entries(dir.path()).unwrap();
-        assert_eq!(entries[0]["response"]["body"], "ok");
-        assert_eq!(entries[0]["response"]["status"], 200);
+        assert_eq!(entries[0].response.body.as_deref(), Some("ok"));
+        assert_eq!(entries[0].response.status, 200);
     }
 
     #[test]
@@ -188,5 +255,32 @@ mod tests {
         std::fs::write(dir.path().join(".epistola"), "not a directory").unwrap();
 
         assert!(append_entry(dir.path(), &request(), &response()).is_err());
+    }
+
+    #[test]
+    fn read_entries_parses_a_literal_ndjson_line_in_the_on_disk_shape() {
+        let dir = tempdir().unwrap();
+        let line = concat!(
+            r#"{"timestamp":"2026-01-01T00:00:00Z","#,
+            r#""request":{"method":"GET","url":"https://x.test","query":[],"headers":[{"name":"X-Test","value":"1"}],"body":null},"#,
+            r#""response":{"status":200,"duration_ms":7,"headers":[],"body":"ok"}}"#,
+        );
+        std::fs::create_dir_all(dir.path().join(".epistola")).unwrap();
+        std::fs::write(log_path(dir.path()), format!("{line}\n")).unwrap();
+
+        let entries = read_entries(dir.path()).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].request.url, "https://x.test");
+        assert_eq!(entries[0].response.status, 200);
+        assert_eq!(entries[0].response.body.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn read_entries_fails_explicitly_on_a_corrupted_line_instead_of_defaulting() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".epistola")).unwrap();
+        std::fs::write(log_path(dir.path()), "not json at all\n").unwrap();
+
+        assert!(read_entries(dir.path()).is_err());
     }
 }

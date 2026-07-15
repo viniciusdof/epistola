@@ -4,7 +4,6 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use epistola_core::{Body, Request};
 use gpui::{
     div, prelude::*, px, App, ClickEvent, Context, FocusHandle, Focusable, IntoElement,
     KeyDownEvent, Render, WeakEntity, Window,
@@ -135,9 +134,9 @@ impl EpistolaGui {
             Default::default(),
         );
         let activity = match outcome {
-            Ok((_collection, resolved)) => {
-                ActivityResult::Resolved(format_resolved_request(&resolved.request))
-            }
+            Ok((_collection, resolved)) => ActivityResult::Resolved(
+                epistola_engine::output::format_request_text(&resolved.request),
+            ),
             Err(engine_err) => match execution::classify_engine_error(engine_err) {
                 ActivityResult::UnresolvedVariable { variable } => {
                     ActivityResult::UnresolvedVariable { variable }
@@ -444,28 +443,6 @@ fn make_prompt_action(
     Rc::new(move |window, cx| {
         let _ = weak.update(cx, |this, cx| f(this, window, cx));
     })
-}
-
-fn format_resolved_request(request: &Request) -> String {
-    let mut out = format!("{} {}\n", request.method.as_str(), request.url);
-    if !request.query.is_empty() {
-        out.push_str("\nQuery:\n");
-        for (name, value) in &request.query {
-            out.push_str(&format!("  {name} = {value}\n"));
-        }
-    }
-    if !request.headers.is_empty() {
-        out.push_str("\nHeaders:\n");
-        for header in &request.headers {
-            out.push_str(&format!("  {}: {}\n", header.name, header.value));
-        }
-    }
-    if let Body::Bytes(bytes) = &request.body {
-        out.push_str("\nBody:\n");
-        out.push_str(&String::from_utf8_lossy(bytes));
-        out.push('\n');
-    }
-    out
 }
 
 fn format_lint_report(report: &epistola_engine::requests::LintReport) -> String {

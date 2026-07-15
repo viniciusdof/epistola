@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use epistola_engine::discovery::discover_collection;
+use epistola_engine::history::LoggedRequest;
 use epistola_engine::requests::{
-    create_request, delete_request, duplicate_request, find_request_files, lint_collection,
+    create_request, delete_request, duplicate_request, lint_collection, list_requests,
     rename_request,
 };
 use epistola_engine::resolve::load_and_resolve;
@@ -123,41 +124,39 @@ fn new(args: NewArgs, cwd: &Path) -> Result<()> {
 
 fn list(args: ListArgs, cwd: &Path) -> Result<()> {
     let collection = discover_collection(cwd)?;
+    let listing = list_requests(&collection)?;
 
-    let mut entries = Vec::new();
-    for path in find_request_files(&collection.root)? {
-        let file = RequestFile::load(&path)
-            .with_context(|| format!("failed to load '{}'", path.display()))?;
-        let rel = path
-            .strip_prefix(&collection.root)
-            .unwrap_or(&path)
-            .to_path_buf();
-        entries.push((rel, file));
+    for invalid in &listing.invalid {
+        eprintln!(
+            "warning: failed to load '{}': {}",
+            invalid.abs_path.display(),
+            invalid.error
+        );
     }
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     if args.json {
-        let json: Vec<_> = entries
+        let json: Vec<_> = listing
+            .requests
             .iter()
-            .map(|(rel, file)| {
+            .map(|r| {
                 serde_json::json!({
-                    "path": rel.display().to_string(),
-                    "name": file.request.name,
-                    "method": file.request.method,
-                    "url": file.request.url,
+                    "path": r.rel_path.display().to_string(),
+                    "name": r.name,
+                    "method": r.method.as_str(),
+                    "url": r.url,
                 })
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&json)?);
-    } else if entries.is_empty() {
+    } else if listing.requests.is_empty() {
         println!("No requests found in this collection.");
     } else {
-        for (rel, file) in &entries {
+        for r in &listing.requests {
             println!(
                 "{:<8} {:<40} {}",
-                file.request.method,
-                rel.display(),
-                file.request.url
+                r.method.as_str(),
+                r.rel_path.display(),
+                r.url
             );
         }
     }
@@ -181,9 +180,7 @@ fn show(args: ShowArgs) -> Result<()> {
     if args.json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&epistola_engine::output::request_to_json(
-                &resolved.request
-            ))?
+            serde_json::to_string_pretty(&LoggedRequest::from(&resolved.request))?
         );
     } else {
         print!("{}", output::format_request(&resolved.request));

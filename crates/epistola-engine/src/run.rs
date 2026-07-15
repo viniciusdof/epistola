@@ -158,7 +158,7 @@ mod tests {
 
         let entries = history::read_entries(dir.path()).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0]["response"]["status"], 200);
+        assert_eq!(entries[0].response.status, 200);
     }
 
     #[tokio::test]
