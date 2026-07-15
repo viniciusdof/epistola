@@ -8,7 +8,7 @@ use crate::theme::Theme;
 pub type SubtabSelectHandler = Rc<dyn Fn(ResponseSubTab, &mut Window, &mut App)>;
 
 struct Chip {
-    label: &'static str,
+    label: String,
     color: gpui::Hsla,
 }
 
@@ -52,12 +52,12 @@ pub fn render_response_drawer(
     subtab: ResponseSubTab,
     on_select_subtab: SubtabSelectHandler,
 ) -> impl IntoElement {
-    let has_headers = matches!(activity, ActivityResult::RunSuccess { .. });
+    let has_headers = matches!(activity, ActivityResult::RunSuccess(_));
 
     let (chip, meta, body): (Chip, Option<String>, gpui::AnyElement) = match activity {
         ActivityResult::Idle => (
             Chip {
-                label: "Idle",
+                label: "Idle".to_string(),
                 color: theme.text_faint,
             },
             None,
@@ -67,62 +67,67 @@ pub fn render_response_drawer(
         ),
         ActivityResult::Running => (
             Chip {
-                label: "Running",
+                label: "Running".to_string(),
                 color: theme.accent,
             },
             None,
             div().child("Sending…").into_any_element(),
         ),
-        ActivityResult::RunSuccess {
-            status,
-            duration_ms,
-            content_length,
-            body,
-            headers,
-        } => {
-            let color = if (200..300).contains(status) {
+        ActivityResult::RunSuccess(response) => {
+            let color = if response.is_success() {
                 theme.success
             } else {
                 theme.method_delete
             };
-            let label: &'static str = if (200..300).contains(status) {
-                "200 OK"
-            } else {
-                "Error"
-            };
+            let status = response.status;
+            let body_text = response
+                .body_as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|_| format!("<{} bytes, not valid UTF-8>", response.body.len()));
             let content = match subtab {
-                ResponseSubTab::Body => div().child(body.clone()).into_any_element(),
+                ResponseSubTab::Body => div().child(body_text.clone()).into_any_element(),
                 ResponseSubTab::Headers => div()
                     .flex()
                     .flex_col()
                     .gap(px(3.))
-                    .children(headers.iter().map(|(name, value)| {
+                    .children(response.headers.iter().map(|header| {
                         div()
                             .flex()
                             .gap(px(8.))
-                            .child(div().text_color(theme.method_put).child(name.clone()))
-                            .child(div().text_color(theme.text).child(value.clone()))
+                            .child(
+                                div()
+                                    .text_color(theme.method_put)
+                                    .child(header.name.clone()),
+                            )
+                            .child(div().text_color(theme.text).child(header.value.clone()))
                     }))
                     .into_any_element(),
                 ResponseSubTab::Raw => {
                     let mut raw = format!("HTTP/1.1 {status}\n");
-                    for (name, value) in headers {
-                        raw.push_str(&format!("{name}: {value}\n"));
+                    for header in &response.headers {
+                        raw.push_str(&format!("{}: {}\n", header.name, header.value));
                     }
                     raw.push('\n');
-                    raw.push_str(body);
+                    raw.push_str(&body_text);
                     div().child(raw).into_any_element()
                 }
             };
             (
-                Chip { label, color },
-                Some(format!("{status} · {duration_ms} ms · {content_length} B")),
+                Chip {
+                    label: status.to_string(),
+                    color,
+                },
+                Some(format!(
+                    "{status} · {} ms · {} B",
+                    response.duration.as_millis(),
+                    response.body.len()
+                )),
                 content,
             )
         }
         ActivityResult::RunFailed(message) => (
             Chip {
-                label: "Failed",
+                label: "Failed".to_string(),
                 color: theme.method_delete,
             },
             None,
@@ -130,7 +135,7 @@ pub fn render_response_drawer(
         ),
         ActivityResult::UnresolvedVariable { variable } => (
             Chip {
-                label: "Unresolved",
+                label: "Unresolved".to_string(),
                 color: theme.method_put,
             },
             None,
@@ -142,7 +147,7 @@ pub fn render_response_drawer(
         ),
         ActivityResult::Resolved(text) => (
             Chip {
-                label: "Resolved",
+                label: "Resolved".to_string(),
                 color: theme.method_put,
             },
             None,
@@ -150,7 +155,7 @@ pub fn render_response_drawer(
         ),
         ActivityResult::ResolvedFailed(message) => (
             Chip {
-                label: "Resolve failed",
+                label: "Resolve failed".to_string(),
                 color: theme.method_delete,
             },
             None,
@@ -158,7 +163,7 @@ pub fn render_response_drawer(
         ),
         ActivityResult::Linted(text) => (
             Chip {
-                label: "Lint",
+                label: "Lint".to_string(),
                 color: theme.method_put,
             },
             None,
@@ -166,7 +171,7 @@ pub fn render_response_drawer(
         ),
         ActivityResult::LintFailed(message) => (
             Chip {
-                label: "Lint failed",
+                label: "Lint failed".to_string(),
                 color: theme.method_delete,
             },
             None,

@@ -7,11 +7,11 @@ fn run_summary(activity: &ActivityResult) -> Option<String> {
     match activity {
         ActivityResult::Idle => None,
         ActivityResult::Running => Some("Sending…".to_string()),
-        ActivityResult::RunSuccess {
-            status,
-            duration_ms,
-            ..
-        } => Some(format!("{status} · {duration_ms} ms")),
+        ActivityResult::RunSuccess(response) => Some(format!(
+            "{} · {} ms",
+            response.status,
+            response.duration.as_millis()
+        )),
         ActivityResult::RunFailed(_) => Some("Run failed".to_string()),
         ActivityResult::UnresolvedVariable { variable } => {
             Some(format!("Unresolved: {{{{{variable}}}}}"))

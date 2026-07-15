@@ -1,12 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use epistola_format::{FolderManifest, RequestFile};
-use gpui::{div, prelude::*, px, Context, FocusHandle, IntoElement, MouseButton, SharedString};
+use gpui::{div, prelude::*, px, Context, FocusHandle, IntoElement, MouseButton};
 
 use crate::components::editor_text::EditorTextElement;
 use crate::components::kit::{icon, IconName, MethodTag, PathClickHandler};
 use crate::components::tab_strip::{self, TabStripCallbacks};
-use crate::execution;
 use crate::root::EpistolaGui;
 use crate::state::{ActiveFile, ActivityResult, AppState};
 use crate::theme::Theme;
@@ -149,119 +147,6 @@ pub(crate) fn tokenize_line(line: &str) -> Vec<(TokenKind, String)> {
     spans
 }
 
-/// Display-only approximation — real inheritance lives in
-/// `UnresolvedRequest::with_folder_inheritance`.
-fn nearest_folder_auth(collection_root: &Path, request_rel_dir: &Path) -> Option<String> {
-    let mut dir = request_rel_dir.to_path_buf();
-    loop {
-        let candidate = collection_root.join(&dir).join("folder.toml");
-        if candidate.is_file() {
-            if let Ok(manifest) = FolderManifest::load(&candidate) {
-                if manifest.auth.is_some() {
-                    return Some(if dir.as_os_str().is_empty() {
-                        "folder.toml".to_string()
-                    } else {
-                        format!("{}/folder.toml", dir.display())
-                    });
-                }
-            }
-        }
-        if !dir.pop() {
-            return None;
-        }
-    }
-}
-
-enum EditorContent {
-    Empty(SharedString),
-    Lines {
-        virtual_note: Option<String>,
-        lines: Vec<String>,
-    },
-}
-
-fn read_toml_lines(path: &Path) -> EditorContent {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return EditorContent::Empty(format!("Could not read {}", path.display()).into());
-    };
-    EditorContent::Lines {
-        virtual_note: None,
-        lines: raw.lines().map(str::to_string).collect(),
-    }
-}
-
-fn load_content(state: &AppState) -> EditorContent {
-    match &state.active_file {
-        ActiveFile::None => EditorContent::Empty("No request open — press ⌘P to open one.".into()),
-        ActiveFile::Config => {
-            let vars = epistola_format::load_global_config().unwrap_or_default();
-            if vars.is_empty() {
-                EditorContent::Lines {
-                    virtual_note: None,
-                    lines: vec!["# no global variables set yet".to_string()],
-                }
-            } else {
-                let mut lines = vec!["[variables]".to_string()];
-                lines.extend(vars.iter().map(|(k, v)| format!("{k} = \"{v}\"")));
-                EditorContent::Lines {
-                    virtual_note: None,
-                    lines,
-                }
-            }
-        }
-        ActiveFile::Request(path) => {
-            let Ok(raw) = std::fs::read_to_string(path) else {
-                return EditorContent::Empty(format!("Could not read {}", path.display()).into());
-            };
-            let virtual_note = state.collection.as_ref().ok().and_then(|collection| {
-                let rel_dir = path.strip_prefix(&collection.root).ok()?.parent()?;
-                let file = RequestFile::from_toml_str(&raw).ok()?;
-                if file.request.auth.is_some() {
-                    return None;
-                }
-                nearest_folder_auth(&collection.root, rel_dir)
-            });
-            EditorContent::Lines {
-                virtual_note,
-                lines: raw.lines().map(str::to_string).collect(),
-            }
-        }
-
-        ActiveFile::Folder(dir) => read_toml_lines(&dir.join("folder.toml")),
-        ActiveFile::Environment(name) => match &state.collection {
-            Ok(collection) => read_toml_lines(
-                &collection
-                    .root
-                    .join("environments")
-                    .join(format!("{name}.toml")),
-            ),
-            Err(_) => EditorContent::Empty("No collection open".into()),
-        },
-    }
-}
-
-fn render_line(number: usize, text: &str, theme: Theme) -> impl IntoElement {
-    div()
-        .flex()
-        .px(px(16.))
-        .child(
-            div()
-                .flex_none()
-                .w(px(24.))
-                .text_align(gpui::TextAlign::Right)
-                .mr(px(8.))
-                .text_color(theme.text_faint)
-                .child(number.to_string()),
-        )
-        .child(
-            div().flex().children(
-                tokenize_line(text)
-                    .into_iter()
-                    .map(|(kind, text)| div().text_color(kind.color(theme)).child(text)),
-            ),
-        )
-}
-
 fn render_virtual_line(note: &str, theme: Theme) -> impl IntoElement {
     div()
         .flex()
@@ -282,42 +167,6 @@ fn render_virtual_line(note: &str, theme: Theme) -> impl IntoElement {
         .child(format!("inherits Authorization from {note}"))
 }
 
-/// What the preview row shows before a run: the request's resolved (or
-/// best-effort raw) URL, and whether resolving it hit an undefined
-/// `{{variable}}`.
-struct UrlPreview {
-    text: String,
-    unresolved_variable: Option<String>,
-}
-
-fn preview_url(state: &AppState, path: &Path) -> UrlPreview {
-    match epistola_engine::run::resolve_saved_request(
-        path,
-        state.environment.as_deref(),
-        Default::default(),
-    ) {
-        Ok((_collection, resolved)) => UrlPreview {
-            text: resolved.request.url.clone(),
-            unresolved_variable: None,
-        },
-        Err(engine_err) => {
-            let raw_url = std::fs::read_to_string(path)
-                .ok()
-                .and_then(|raw| RequestFile::from_toml_str(&raw).ok())
-                .map(|file| file.request.url)
-                .unwrap_or_default();
-            let unresolved_variable = match execution::classify_engine_error(engine_err) {
-                ActivityResult::UnresolvedVariable { variable } => Some(variable),
-                _ => None,
-            };
-            UrlPreview {
-                text: raw_url,
-                unresolved_variable,
-            }
-        }
-    }
-}
-
 fn render_preview_row(
     state: &AppState,
     theme: Theme,
@@ -325,7 +174,7 @@ fn render_preview_row(
     on_run: &PathClickHandler,
 ) -> impl IntoElement {
     let request = state.active_request();
-    let preview = preview_url(state, path);
+    let preview = state.url_previews.get(path);
     let running = matches!(state.active_activity(), ActivityResult::Running);
     let run_path = path.to_path_buf();
     let on_run = on_run.clone();
@@ -352,23 +201,26 @@ fn render_preview_row(
                 .text_ellipsis()
                 .font_family("monospace")
                 .text_color(theme.text_muted)
-                .child(preview.text),
+                .child(preview.map(|p| p.text.clone()).unwrap_or_default()),
         )
-        .when_some(preview.unresolved_variable, |el, variable| {
-            el.child(
-                div()
-                    .flex_none()
-                    .text_size(px(9.5))
-                    .font_family("monospace")
-                    .text_color(theme.method_put)
-                    .border_1()
-                    .border_color(theme.border)
-                    .rounded(px(4.))
-                    .px(px(6.))
-                    .py(px(2.))
-                    .child(format!("{{{{{variable}}}}} unresolved")),
-            )
-        })
+        .when_some(
+            preview.and_then(|p| p.unresolved_variable.clone()),
+            |el, variable| {
+                el.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(9.5))
+                        .font_family("monospace")
+                        .text_color(theme.method_put)
+                        .border_1()
+                        .border_color(theme.border)
+                        .rounded(px(4.))
+                        .px(px(6.))
+                        .py(px(2.))
+                        .child(format!("{{{{{variable}}}}} unresolved")),
+                )
+            },
+        )
         .child(
             div()
                 .id("editor-run-button")
@@ -470,36 +322,23 @@ pub fn render_editor(
                 .on_mouse_move(cx.listener(EpistolaGui::on_editor_mouse_move))
                 .child(text_element)
         }
-        None => match load_content(state) {
-            EditorContent::Empty(message) => body.child(
-                div()
-                    .px(px(16.))
-                    .py(px(20.))
-                    .text_color(theme.text_faint)
-                    .child(message),
-            ),
-            EditorContent::Lines {
-                virtual_note,
-                lines,
-            } => {
-                let mut rows: Vec<gpui::AnyElement> = Vec::new();
-                for (i, line) in lines.iter().enumerate() {
-                    rows.push(render_line(i + 1, line, theme).into_any_element());
-                    if i == 1 {
-                        if let Some(note) = &virtual_note {
-                            rows.push(render_virtual_line(note, theme).into_any_element());
-                        }
-                    }
-                }
-                body.children(rows)
-            }
-        },
+        None => body.child(
+            div()
+                .px(px(16.))
+                .py(px(20.))
+                .text_color(theme.text_faint)
+                .child("No request open — press ⌘P to open one."),
+        ),
     };
 
     let active_request_path: Option<PathBuf> = match &state.active_file {
         ActiveFile::Request(path) => Some(path.clone()),
         _ => None,
     };
+    let virtual_note = active_request_path
+        .as_ref()
+        .and_then(|path| state.url_previews.get(path))
+        .and_then(|preview| preview.virtual_note.clone());
     let save_error = buffer.and_then(|buffer| buffer.save_error.clone());
 
     div()
@@ -514,6 +353,9 @@ pub fn render_editor(
         ))
         .when_some(active_request_path, |el, path| {
             el.child(render_preview_row(state, theme, &path, &callbacks.on_run))
+        })
+        .when_some(virtual_note, |el, note| {
+            el.child(render_virtual_line(&note, theme))
         })
         .when_some(save_error, |el, message| {
             el.child(render_save_error(&message, theme))

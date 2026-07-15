@@ -1,15 +1,18 @@
 use std::rc::Rc;
 
+use epistola_core::Method;
 use gpui::{div, prelude::*, px, App, ClickEvent, FocusHandle, IntoElement, SharedString, Window};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
-use nucleo_matcher::{Config, Matcher, Utf32Str};
+use nucleo_matcher::{Matcher, Utf32Str};
 
+use crate::components::kit::MethodTag;
 use crate::theme::Theme;
 
 pub type SelectHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
+#[derive(Clone)]
 pub struct PaletteItem {
-    pub leading: Option<gpui::AnyElement>,
+    pub leading_method: Option<Method>,
     pub label: SharedString,
     pub shortcut: Option<SharedString>,
     pub on_select: SelectHandler,
@@ -18,7 +21,7 @@ pub struct PaletteItem {
 impl PaletteItem {
     pub fn new(label: impl Into<SharedString>, on_select: SelectHandler) -> Self {
         Self {
-            leading: None,
+            leading_method: None,
             label: label.into(),
             shortcut: None,
             on_select,
@@ -30,24 +33,27 @@ impl PaletteItem {
         self
     }
 
-    pub fn leading(mut self, element: impl IntoElement) -> Self {
-        self.leading = Some(element.into_any_element());
+    pub fn leading_method(mut self, method: Method) -> Self {
+        self.leading_method = Some(method);
         self
     }
 }
 
-pub fn filter_items(items: Vec<PaletteItem>, query: &str) -> Vec<PaletteItem> {
+pub fn filter_items(
+    matcher: &mut Matcher,
+    items: Vec<PaletteItem>,
+    query: &str,
+) -> Vec<PaletteItem> {
     if query.trim().is_empty() {
         return items;
     }
     let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
-    let mut matcher = Matcher::new(Config::DEFAULT);
     let mut buf = Vec::new();
     let mut scored: Vec<(u32, PaletteItem)> = items
         .into_iter()
         .filter_map(|item| {
             let haystack = Utf32Str::new(&item.label, &mut buf);
-            let score = pattern.score(haystack, &mut matcher)?;
+            let score = pattern.score(haystack, matcher)?;
             Some((score, item))
         })
         .collect();
@@ -56,12 +62,16 @@ pub fn filter_items(items: Vec<PaletteItem>, query: &str) -> Vec<PaletteItem> {
 }
 
 fn render_item(
-    item: PaletteItem,
+    item: &PaletteItem,
     theme: Theme,
     index: usize,
     is_selected: bool,
 ) -> impl IntoElement {
     let on_select = item.on_select.clone();
+    let leading = item
+        .leading_method
+        .clone()
+        .map(|method| MethodTag::new(method, theme));
     div()
         .id(SharedString::from(format!("palette-item-{index}")))
         .flex()
@@ -87,10 +97,10 @@ fn render_item(
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .children(item.leading)
-                .child(item.label),
+                .children(leading)
+                .child(item.label.clone()),
         )
-        .when_some(item.shortcut, |el, shortcut| {
+        .when_some(item.shortcut.clone(), |el, shortcut| {
             el.child(
                 div()
                     .font_family("monospace")
@@ -104,7 +114,7 @@ fn render_item(
 pub fn render_palette_overlay(
     placeholder: &'static str,
     query: &str,
-    items: Vec<PaletteItem>,
+    items: &[PaletteItem],
     selected: usize,
     theme: Theme,
     focus_handle: &FocusHandle,
@@ -161,7 +171,7 @@ pub fn render_palette_overlay(
                         .overflow_y_scroll()
                         .children(
                             items
-                                .into_iter()
+                                .iter()
                                 .enumerate()
                                 .map(|(i, item)| render_item(item, theme, i, i == selected)),
                         ),

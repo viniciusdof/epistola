@@ -1,8 +1,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use epistola_core::Response;
+use epistola_engine::history::HistoryEntry;
+use epistola_format::{FolderManifest, RequestFile};
+
 use crate::buffer::EditorBuffer;
 use crate::collection::{self, CollectionTree, RequestEntry};
+use crate::execution;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum View {
@@ -22,6 +27,20 @@ pub enum ActiveFile {
 impl ActiveFile {
     pub fn is_request(&self) -> bool {
         matches!(self, ActiveFile::Request(_))
+    }
+
+    pub fn disk_path(&self, collection: Option<&CollectionTree>) -> Option<PathBuf> {
+        match self {
+            ActiveFile::Request(path) => Some(path.clone()),
+            ActiveFile::Folder(dir) => Some(dir.join("folder.toml")),
+            ActiveFile::Environment(name) => Some(
+                collection?
+                    .root
+                    .join("environments")
+                    .join(format!("{name}.toml")),
+            ),
+            ActiveFile::Config | ActiveFile::None => None,
+        }
     }
 }
 
@@ -59,17 +78,9 @@ pub enum ConfirmDiscardKind {
 pub enum ActivityResult {
     Idle,
     Running,
-    RunSuccess {
-        status: u16,
-        duration_ms: u128,
-        content_length: usize,
-        body: String,
-        headers: Vec<(String, String)>,
-    },
+    RunSuccess(Response),
     RunFailed(String),
-    UnresolvedVariable {
-        variable: String,
-    },
+    UnresolvedVariable { variable: String },
     Resolved(String),
     ResolvedFailed(String),
     Linted(String),
@@ -82,6 +93,12 @@ pub enum ResponseSubTab {
     Body,
     Headers,
     Raw,
+}
+
+pub struct UrlPreview {
+    pub text: String,
+    pub unresolved_variable: Option<String>,
+    pub virtual_note: Option<String>,
 }
 
 pub struct AppState {
@@ -98,6 +115,8 @@ pub struct AppState {
     pub collection_action_error: Option<String>,
     pub recent_collections: Vec<PathBuf>,
     pub editor_buffers: HashMap<ActiveFile, EditorBuffer>,
+    pub url_previews: HashMap<PathBuf, UrlPreview>,
+    pub history_entries: Vec<HistoryEntry>,
 
     pub overlay_query: String,
     pub overlay_selected: usize,
@@ -119,6 +138,8 @@ impl AppState {
             collection_action_error: None,
             recent_collections: Vec::new(),
             editor_buffers: HashMap::new(),
+            url_previews: HashMap::new(),
+            history_entries: Vec::new(),
             overlay_query: String::new(),
             overlay_selected: 0,
             overlay_error: None,
@@ -156,25 +177,11 @@ impl AppState {
         self.collection_action_error = None;
         self.recent_collections = epistola_engine::recent::list().unwrap_or_default();
         self.editor_buffers.clear();
+        self.url_previews.clear();
         let active = self.active_file.clone();
         self.ensure_buffer(&active);
-    }
-
-    fn load_buffer_text(&self, file: &ActiveFile) -> Option<String> {
-        match file {
-            ActiveFile::Request(path) => std::fs::read_to_string(path).ok(),
-            ActiveFile::Folder(dir) => std::fs::read_to_string(dir.join("folder.toml")).ok(),
-            ActiveFile::Environment(name) => {
-                let collection = self.collection.as_ref().ok()?;
-                std::fs::read_to_string(
-                    collection
-                        .root
-                        .join("environments")
-                        .join(format!("{name}.toml")),
-                )
-                .ok()
-            }
-            ActiveFile::Config | ActiveFile::None => None,
+        if let ActiveFile::Request(path) = &active {
+            self.refresh_url_preview(path);
         }
     }
 
@@ -182,9 +189,81 @@ impl AppState {
         if self.editor_buffers.contains_key(file) {
             return;
         }
-        if let Some(text) = self.load_buffer_text(file) {
-            self.editor_buffers
-                .insert(file.clone(), EditorBuffer::new(text));
+        let buffer = match file {
+            ActiveFile::None => return,
+            ActiveFile::Config => {
+                let vars = epistola_format::load_global_config().unwrap_or_default();
+                let text = if vars.is_empty() {
+                    "# no global variables set yet".to_string()
+                } else {
+                    let mut lines = vec!["[variables]".to_string()];
+                    lines.extend(vars.iter().map(|(k, v)| format!("{k} = \"{v}\"")));
+                    lines.join("\n")
+                };
+                EditorBuffer::read_only(text)
+            }
+            _ => {
+                let Some(path) = file.disk_path(self.collection.as_ref().ok()) else {
+                    return;
+                };
+                match std::fs::read_to_string(&path) {
+                    Ok(text) => EditorBuffer::new(text),
+                    Err(_) => EditorBuffer::read_only(format!("Could not read {}", path.display())),
+                }
+            }
+        };
+        self.editor_buffers.insert(file.clone(), buffer);
+    }
+
+    pub fn refresh_url_preview(&mut self, path: &Path) {
+        let raw = std::fs::read_to_string(path).ok();
+        let virtual_note = raw.as_deref().and_then(|raw| {
+            let collection = self.collection.as_ref().ok()?;
+            let rel_dir = path.strip_prefix(&collection.root).ok()?.parent()?;
+            let file = RequestFile::from_toml_str(raw).ok()?;
+            if file.request.auth.is_some() {
+                return None;
+            }
+            nearest_folder_auth(&collection.root, rel_dir)
+        });
+
+        let preview = match epistola_engine::run::resolve_saved_request(
+            path,
+            self.environment.as_deref(),
+            Default::default(),
+        ) {
+            Ok((_collection, resolved)) => UrlPreview {
+                text: resolved.request.url.clone(),
+                unresolved_variable: None,
+                virtual_note,
+            },
+            Err(engine_err) => {
+                let raw_url = raw
+                    .as_deref()
+                    .and_then(|raw| RequestFile::from_toml_str(raw).ok())
+                    .map(|file| file.request.url)
+                    .unwrap_or_default();
+                UrlPreview {
+                    text: raw_url,
+                    unresolved_variable: execution::unresolved_variable(&engine_err),
+                    virtual_note,
+                }
+            }
+        };
+        self.url_previews.insert(path.to_path_buf(), preview);
+    }
+
+    fn refresh_all_url_previews(&mut self) {
+        let paths: Vec<PathBuf> = self
+            .open_tabs
+            .iter()
+            .filter_map(|file| match file {
+                ActiveFile::Request(path) => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        for path in paths {
+            self.refresh_url_preview(&path);
         }
     }
 
@@ -193,6 +272,9 @@ impl AppState {
             self.open_tabs.push(file.clone());
         }
         self.ensure_buffer(&file);
+        if let ActiveFile::Request(path) = &file {
+            self.refresh_url_preview(path);
+        }
         self.active_file = file;
         self.view = View::Workspace;
         self.overlay = None;
@@ -292,10 +374,16 @@ impl AppState {
             None => collection.environments[0].clone(),
         };
         self.environment = Some(next);
+        self.refresh_all_url_previews();
     }
 
     pub fn set_environment(&mut self, name: String) {
         self.environment = Some(name);
+        self.refresh_all_url_previews();
+    }
+
+    pub fn overlay_selection(&self, len: usize) -> usize {
+        self.overlay_selected.min(len.saturating_sub(1))
     }
 
     pub fn open_overlay(&mut self, overlay: Overlay) {
@@ -310,6 +398,7 @@ impl AppState {
         self.overlay_query.clear();
         self.overlay_selected = 0;
         self.overlay_error = None;
+        self.history_entries.clear();
     }
 
     /// Reloads the sidebar's `CollectionTree` after a request CRUD operation,
@@ -336,11 +425,36 @@ impl AppState {
             self.active_file = new_file.clone();
         }
         self.ensure_buffer(&new_file);
+        self.url_previews.remove(old);
+        if let ActiveFile::Request(path) = &new_file {
+            self.refresh_url_preview(path);
+        }
     }
 
     /// Closes the tab for `path` if it's open — used after a delete, where
     /// there's no file left to prompt "unsaved changes" about.
     pub fn close_request_tab_if_open(&mut self, path: &Path) {
         self.close_tab(&ActiveFile::Request(path.to_path_buf()));
+    }
+}
+
+fn nearest_folder_auth(collection_root: &Path, request_rel_dir: &Path) -> Option<String> {
+    let mut dir = request_rel_dir.to_path_buf();
+    loop {
+        let candidate = collection_root.join(&dir).join("folder.toml");
+        if candidate.is_file() {
+            if let Ok(manifest) = FolderManifest::load(&candidate) {
+                if manifest.auth.is_some() {
+                    return Some(if dir.as_os_str().is_empty() {
+                        "folder.toml".to_string()
+                    } else {
+                        format!("{}/folder.toml", dir.display())
+                    });
+                }
+            }
+        }
+        if !dir.pop() {
+            return None;
+        }
     }
 }

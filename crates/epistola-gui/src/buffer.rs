@@ -10,6 +10,7 @@ pub struct EditorBuffer {
     pub selection_reversed: bool,
     pub marked_range: Option<Range<usize>>,
     pub save_error: Option<String>,
+    pub read_only: bool,
 }
 
 impl EditorBuffer {
@@ -21,6 +22,14 @@ impl EditorBuffer {
             selection_reversed: false,
             marked_range: None,
             save_error: None,
+            read_only: false,
+        }
+    }
+
+    pub fn read_only(text: String) -> Self {
+        Self {
+            read_only: true,
+            ..Self::new(text)
         }
     }
 

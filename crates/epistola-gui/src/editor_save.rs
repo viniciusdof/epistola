@@ -3,9 +3,13 @@ use epistola_format::{FolderManifest, RequestFile};
 use crate::state::{ActiveFile, AppState};
 
 pub fn validate_and_save(state: &mut AppState, file: &ActiveFile) {
-    let Some(text) = state.editor_buffers.get(file).map(|b| b.text.clone()) else {
+    let Some(buffer) = state.editor_buffers.get(file) else {
         return;
     };
+    if buffer.read_only {
+        return;
+    }
+    let text = buffer.text.clone();
 
     let validation: Result<(), String> = match file {
         ActiveFile::Request(_) => RequestFile::from_toml_str(&text)
@@ -27,22 +31,16 @@ pub fn validate_and_save(state: &mut AppState, file: &ActiveFile) {
         return;
     }
 
-    let path = match file {
-        ActiveFile::Request(path) => path.clone(),
-        ActiveFile::Folder(dir) => dir.join("folder.toml"),
-        ActiveFile::Environment(name) => {
-            let Ok(collection) = state.collection.as_ref() else {
-                return;
-            };
-            collection
-                .root
-                .join("environments")
-                .join(format!("{name}.toml"))
-        }
-        ActiveFile::Config | ActiveFile::None => return,
+    let Some(path) = file.disk_path(state.collection.as_ref().ok()) else {
+        return;
     };
 
     let result = std::fs::write(&path, &text);
+    if result.is_ok() {
+        if let ActiveFile::Request(path) = file {
+            state.refresh_url_preview(path);
+        }
+    }
     let Some(buffer) = state.editor_buffers.get_mut(file) else {
         return;
     };
@@ -80,6 +78,8 @@ mod tests {
             collection_action_error: None,
             recent_collections: Vec::new(),
             editor_buffers: HashMap::new(),
+            url_previews: HashMap::new(),
+            history_entries: Vec::new(),
             overlay_query: String::new(),
             overlay_selected: 0,
             overlay_error: None,

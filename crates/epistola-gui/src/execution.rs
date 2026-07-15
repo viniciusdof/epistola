@@ -11,15 +11,20 @@ use gpui::{Context, WeakEntity};
 use crate::root::EpistolaGui;
 use crate::state::{ActiveFile, ActivityResult};
 
-pub(crate) fn classify_engine_error(err: EngineError) -> ActivityResult {
-    if let EngineError::Format(format_err) = &err {
+pub(crate) fn unresolved_variable(err: &EngineError) -> Option<String> {
+    if let EngineError::Format(format_err) = err {
         if let FormatError::Interpolation(InterpolationError::UnknownVariable(variable)) =
             format_err.as_ref()
         {
-            return ActivityResult::UnresolvedVariable {
-                variable: variable.clone(),
-            };
+            return Some(variable.clone());
         }
+    }
+    None
+}
+
+pub(crate) fn classify_engine_error(err: EngineError) -> ActivityResult {
+    if let Some(variable) = unresolved_variable(&err) {
+        return ActivityResult::UnresolvedVariable { variable };
     }
     ActivityResult::RunFailed(err.to_string())
 }
@@ -54,18 +59,7 @@ pub fn spawn_run(path: PathBuf, environment: Option<String>, cx: &mut Context<Ep
             .await;
 
         let activity = match outcome {
-            Ok(outcome) => ActivityResult::RunSuccess {
-                status: outcome.response.status,
-                duration_ms: outcome.response.duration.as_millis(),
-                content_length: outcome.response.body.len(),
-                body: String::from_utf8_lossy(&outcome.response.body).into_owned(),
-                headers: outcome
-                    .response
-                    .headers
-                    .iter()
-                    .map(|header| (header.name.clone(), header.value.clone()))
-                    .collect(),
-            },
+            Ok(outcome) => ActivityResult::RunSuccess(outcome.response),
             Err(engine_err) => classify_engine_error(engine_err),
         };
 

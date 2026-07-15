@@ -17,6 +17,14 @@ impl EpistolaGui {
         }
     }
 
+    fn with_active_buffer_if_editable(&mut self, f: impl FnOnce(&mut EditorBuffer)) {
+        self.with_active_buffer(|buffer| {
+            if !buffer.read_only {
+                f(buffer);
+            }
+        });
+    }
+
     pub(crate) fn move_left(&mut self, _: &MoveLeft, _window: &mut Window, cx: &mut Context<Self>) {
         self.with_active_buffer(|buffer| {
             if buffer.selected_range.is_empty() {
@@ -158,7 +166,7 @@ impl EpistolaGui {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.with_active_buffer(|buffer| {
+        self.with_active_buffer_if_editable(|buffer| {
             if buffer.selected_range.is_empty() {
                 let prev = buffer.previous_boundary(buffer.cursor_offset());
                 if prev == buffer.cursor_offset() {
@@ -177,12 +185,12 @@ impl EpistolaGui {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.with_active_buffer(|buffer| buffer.replace_active_range("\n"));
+        self.with_active_buffer_if_editable(|buffer| buffer.replace_active_range("\n"));
         cx.notify();
     }
 
     pub(crate) fn delete(&mut self, _: &Delete, _window: &mut Window, cx: &mut Context<Self>) {
-        self.with_active_buffer(|buffer| {
+        self.with_active_buffer_if_editable(|buffer| {
             if buffer.selected_range.is_empty() {
                 let next = buffer.next_boundary(buffer.cursor_offset());
                 if next == buffer.cursor_offset() {
@@ -214,7 +222,7 @@ impl EpistolaGui {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
-        self.with_active_buffer(|buffer| buffer.replace_active_range(""));
+        self.with_active_buffer_if_editable(|buffer| buffer.replace_active_range(""));
         cx.notify();
     }
 
@@ -222,7 +230,7 @@ impl EpistolaGui {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
-        self.with_active_buffer(|buffer| buffer.replace_active_range(&text));
+        self.with_active_buffer_if_editable(|buffer| buffer.replace_active_range(&text));
         cx.notify();
     }
 
