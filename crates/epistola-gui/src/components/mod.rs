@@ -6,6 +6,7 @@ pub mod home;
 pub mod kit;
 pub mod picker;
 pub mod prompt_modal;
+pub mod resize_handle;
 pub mod response_drawer;
 pub mod sidebar;
 pub mod statusbar;

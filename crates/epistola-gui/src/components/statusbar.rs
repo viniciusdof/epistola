@@ -1,7 +1,9 @@
-use gpui::{div, prelude::*, px, IntoElement};
+use gpui::{div, prelude::*, px, IntoElement, Pixels};
 
 use crate::state::{ActiveFile, ActivityResult, AppState};
 use crate::theme::Theme;
+
+pub const STATUSBAR_HEIGHT: Pixels = px(26.);
 
 fn run_summary(activity: &ActivityResult) -> Option<String> {
     match activity {
@@ -37,7 +39,7 @@ pub fn render_statusbar(state: &AppState, theme: Theme) -> impl IntoElement {
         .flex_none()
         .items_center()
         .gap(px(14.))
-        .h(px(26.))
+        .h(STATUSBAR_HEIGHT)
         .px(px(12.))
         .border_t_1()
         .border_color(theme.border)

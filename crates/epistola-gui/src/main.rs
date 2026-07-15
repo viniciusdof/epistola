@@ -7,6 +7,7 @@ mod editor_actions;
 mod editor_input;
 mod editor_save;
 mod execution;
+mod panel_actions;
 mod root;
 mod state;
 mod text_field;
@@ -23,7 +24,7 @@ use actions::{
     Backspace, Copy, Cut, CycleEnvironment, Delete, Dismiss, End, GoHome, Home, InsertNewline,
     LintCollection, MoveDown, MoveLeft, MoveRight, MoveUp, OpenCollection, OpenSettings, Paste,
     Redo, RunActiveRequest, Save, SelectAll, SelectDown, SelectLeft, SelectRight, SelectUp,
-    ShowResolvedRequest, ToggleCommandPalette, ToggleQuickOpen, Undo,
+    ShowResolvedRequest, ToggleCommandPalette, ToggleDrawer, ToggleQuickOpen, ToggleSidebar, Undo,
 };
 use assets::Assets;
 use root::EpistolaGui;
@@ -81,6 +82,8 @@ fn main() {
                 KeyBinding::new("cmd-shift-l", LintCollection, None),
                 KeyBinding::new("cmd-e", CycleEnvironment, None),
                 KeyBinding::new("cmd-o", OpenCollection, None),
+                KeyBinding::new("cmd-\\", ToggleSidebar, None),
+                KeyBinding::new("cmd-j", ToggleDrawer, None),
                 KeyBinding::new("escape", Dismiss, None),
             ]);
 

@@ -1,10 +1,14 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use gpui::{div, prelude::*, px, uniform_list, Context, IntoElement, Pixels, SharedString};
 
-use crate::actions::{OpenEnvironmentDoc, OpenFolderDoc, OpenRequestFile, OpenSettings};
+use crate::actions::{
+    OpenEnvironmentDoc, OpenFolderDoc, OpenRequestFile, OpenSettings, ToggleFolderCollapse,
+};
 use crate::collection::{CollectionTree, FolderEntry, RequestEntry};
 use crate::components::kit::{dispatch_on_click, icon, IconName, MethodTag};
+use crate::components::resize_handle::{resize_handle, ResizeAxis};
 use crate::root::EpistolaGui;
 use crate::state::{ActiveFile, AppState};
 use crate::theme::Theme;
@@ -21,6 +25,7 @@ pub enum SidebarRow {
         depth: usize,
         has_toml: bool,
         abs_path: PathBuf,
+        collapsed: bool,
     },
     Request {
         entry: RequestEntry,
@@ -36,14 +41,21 @@ fn flatten_folder(
     collection_root: &std::path::Path,
     folder: &FolderEntry,
     depth: usize,
+    collapsed_folders: &HashSet<PathBuf>,
     out: &mut Vec<SidebarRow>,
 ) {
+    let abs_path = collection_root.join(&folder.rel_path);
+    let collapsed = collapsed_folders.contains(&abs_path);
     out.push(SidebarRow::Folder {
         name: folder.name.clone().into(),
         depth,
         has_toml: folder.has_folder_toml,
-        abs_path: collection_root.join(&folder.rel_path),
+        abs_path: abs_path.clone(),
+        collapsed,
     });
+    if collapsed {
+        return;
+    }
     for request in &folder.requests {
         out.push(SidebarRow::Request {
             entry: request.clone(),
@@ -51,11 +63,14 @@ fn flatten_folder(
         });
     }
     for child in &folder.folders {
-        flatten_folder(collection_root, child, depth + 1, out);
+        flatten_folder(collection_root, child, depth + 1, collapsed_folders, out);
     }
 }
 
-pub fn flatten(collection: &Result<CollectionTree, String>) -> Vec<SidebarRow> {
+pub fn flatten(
+    collection: &Result<CollectionTree, String>,
+    collapsed_folders: &HashSet<PathBuf>,
+) -> Vec<SidebarRow> {
     let mut rows = Vec::new();
     match collection {
         Ok(collection) => {
@@ -67,7 +82,7 @@ pub fn flatten(collection: &Result<CollectionTree, String>) -> Vec<SidebarRow> {
                 });
             }
             for folder in &collection.folders {
-                flatten_folder(&collection.root, folder, 0, &mut rows);
+                flatten_folder(&collection.root, folder, 0, collapsed_folders, &mut rows);
             }
             rows.push(SidebarRow::Section("environments".into()));
             if collection.environments.is_empty() {
@@ -150,10 +165,36 @@ fn render_folder_row(
     depth: usize,
     has_toml: bool,
     abs_path: &std::path::Path,
+    collapsed: bool,
     active_folder: Option<&std::path::Path>,
     theme: Theme,
 ) -> impl IntoElement {
     let folder_active = has_toml && active_folder == Some(abs_path);
+    let chevron_dir = abs_path.to_path_buf();
+    let chevron = div()
+        .id(SharedString::from(format!(
+            "sidebar-folder-chevron-{}",
+            abs_path.display()
+        )))
+        .cursor_pointer()
+        .on_click(move |_event, window, cx| {
+            cx.stop_propagation();
+            window.dispatch_action(
+                Box::new(ToggleFolderCollapse {
+                    dir: chevron_dir.clone(),
+                }),
+                cx,
+            );
+        })
+        .child(icon(
+            if collapsed {
+                IconName::ChevronRight
+            } else {
+                IconName::ChevronDown
+            },
+            px(10.),
+            theme.text_faint,
+        ));
     let mut row = div()
         .id(SharedString::from(format!(
             "sidebar-folder-{}",
@@ -170,7 +211,7 @@ fn render_folder_row(
         } else {
             theme.text
         })
-        .child(icon(IconName::ChevronDown, px(10.), theme.text_faint))
+        .child(chevron)
         .child(div().child(name))
         .child(div().flex_1());
     if has_toml {
@@ -231,11 +272,13 @@ fn render_row(row: &SidebarRow, active: &ActiveMarkers, theme: Theme) -> gpui::A
             depth,
             has_toml,
             abs_path,
+            collapsed,
         } => render_folder_row(
             name.clone(),
             *depth,
             *has_toml,
             abs_path,
+            *collapsed,
             active_folder,
             theme,
         )
@@ -293,19 +336,29 @@ pub fn render_sidebar(state: &AppState, cx: &mut Context<EpistolaGui>) -> impl I
     div()
         .id("sidebar")
         .flex()
-        .flex_col()
         .flex_none()
-        .w(SIDEBAR_WIDTH)
-        .py(px(10.))
-        .border_r_1()
-        .border_color(theme.border)
-        .text_size(px(12.5))
+        .w(state.sidebar_width)
         .child(
-            uniform_list("sidebar-rows", count, move |range, _window, _cx| {
-                range
-                    .map(|i| render_row(&rows[i], &active, theme))
-                    .collect()
-            })
-            .flex_1(),
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w(px(0.))
+                .py(px(10.))
+                .text_size(px(12.5))
+                .child(
+                    uniform_list("sidebar-rows", count, move |range, _window, _cx| {
+                        range
+                            .map(|i| render_row(&rows[i], &active, theme))
+                            .collect()
+                    })
+                    .flex_1(),
+                ),
+        )
+        .child(
+            resize_handle("sidebar-resize-handle", ResizeAxis::Horizontal, theme).on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(EpistolaGui::start_sidebar_resize),
+            ),
         )
 }

@@ -1,9 +1,12 @@
-use gpui::{div, prelude::*, px, App, ClickEvent, Context, IntoElement, Window};
+use gpui::{div, prelude::*, px, App, ClickEvent, Context, IntoElement, Pixels, Window};
 
 use crate::actions::SelectResponseSubtab;
+use crate::components::resize_handle::{resize_handle, ResizeAxis};
 use crate::root::EpistolaGui;
 use crate::state::{ActivityResult, ResponseSubTab};
 use crate::theme::Theme;
+
+pub const DRAWER_HEIGHT: Pixels = px(168.);
 
 struct Chip {
     label: String,
@@ -50,6 +53,7 @@ fn drawer_subtab(
 pub fn render_response_drawer(
     activity: &ActivityResult,
     subtab: ResponseSubTab,
+    height: Pixels,
     cx: &mut Context<EpistolaGui>,
 ) -> impl IntoElement {
     let theme = *cx.global::<Theme>();
@@ -184,10 +188,14 @@ pub fn render_response_drawer(
         .flex()
         .flex_col()
         .flex_none()
-        .h(px(168.))
-        .border_t_1()
-        .border_color(theme.border)
+        .h(height)
         .bg(theme.surface)
+        .child(
+            resize_handle("drawer-resize-handle", ResizeAxis::Vertical, theme).on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(EpistolaGui::start_drawer_resize),
+            ),
+        )
         .child(
             div()
                 .flex()

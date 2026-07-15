@@ -1,10 +1,12 @@
-use gpui::{div, prelude::*, px, Context, IntoElement, SharedString};
+use gpui::{div, prelude::*, px, Context, IntoElement, Pixels, SharedString};
 
 use crate::actions::{OpenEnvironmentPicker, ToggleCommandPalette, ToggleQuickOpen};
 use crate::components::kit::{dispatch_on_click, dot_pill, TitlebarButton};
 use crate::root::EpistolaGui;
 use crate::state::{ActiveFile, AppState, View};
 use crate::theme::Theme;
+
+pub const TITLEBAR_HEIGHT: Pixels = px(40.);
 
 fn breadcrumb(state: &AppState) -> Vec<SharedString> {
     match state.view {
@@ -101,7 +103,7 @@ pub fn render_titlebar(
         .flex_none()
         .items_center()
         .gap(px(10.))
-        .h(px(40.))
+        .h(TITLEBAR_HEIGHT)
         .pl(if is_fullscreen { px(14.) } else { px(78.) })
         .pr(px(14.))
         .border_b_1()

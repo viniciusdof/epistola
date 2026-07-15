@@ -1,6 +1,8 @@
 use gpui::{div, prelude::*, px, Context, IntoElement, Pixels};
 
-use crate::actions::{GoHome, GoWorkspace, OpenEnvironmentPicker, OpenHistory, OpenSettings};
+use crate::actions::{
+    GoHome, GoWorkspace, OpenEnvironmentPicker, OpenHistory, OpenSettings, ToggleSidebar,
+};
 use crate::components::kit::{dispatch_on_click, IconName, RailButton};
 use crate::root::EpistolaGui;
 use crate::state::{ActiveFile, AppState, View};
@@ -31,7 +33,13 @@ pub fn render_activity_rail(state: &AppState, cx: &mut Context<EpistolaGui>) -> 
         .child(
             RailButton::new(IconName::FolderTree, "Collection")
                 .active(workspace_active)
-                .on_click(dispatch_on_click(GoWorkspace)),
+                .on_click(move |_event, window, cx| {
+                    if workspace_active {
+                        window.dispatch_action(Box::new(ToggleSidebar), cx);
+                    } else {
+                        window.dispatch_action(Box::new(GoWorkspace), cx);
+                    }
+                }),
         )
         .child(
             RailButton::new(IconName::Layers, "Environments")

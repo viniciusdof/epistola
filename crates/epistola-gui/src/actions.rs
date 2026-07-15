@@ -52,6 +52,8 @@ actions!(
         DuplicateRequest,
         DeleteRequest,
         Dismiss,
+        ToggleSidebar,
+        ToggleDrawer,
     ]
 );
 
@@ -105,6 +107,12 @@ pub struct OpenRecentCollection {
 #[action(namespace = app, no_json)]
 pub struct SelectResponseSubtab {
     pub subtab: ResponseSubTab,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = app, no_json)]
+pub struct ToggleFolderCollapse {
+    pub dir: PathBuf,
 }
 
 fn folder_prompt(prompt: &str) -> PathPromptOptions {

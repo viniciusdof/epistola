@@ -54,7 +54,7 @@ pub fn validate_and_save(state: &mut AppState, file: &ActiveFile) {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
 
     use tempfile::tempdir;
@@ -62,6 +62,7 @@ mod tests {
     use super::*;
     use crate::buffer::EditorBuffer;
     use crate::collection::CollectionTree;
+    use crate::components::{response_drawer, sidebar};
     use crate::state::{ResponseSubTab, View};
 
     fn empty_state() -> AppState {
@@ -81,6 +82,11 @@ mod tests {
             url_previews: HashMap::new(),
             history_entries: Vec::new(),
             sidebar_rows: Vec::new(),
+            collapsed_folders: HashSet::new(),
+            sidebar_width: sidebar::SIDEBAR_WIDTH,
+            sidebar_collapsed: false,
+            drawer_height: response_drawer::DRAWER_HEIGHT,
+            drawer_collapsed: false,
             overlay_selected: 0,
             overlay_error: None,
         }

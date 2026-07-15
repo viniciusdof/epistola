@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use gpui::{
     div, prelude::*, px, App, ClickEvent, Context, Entity, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, PromptLevel, Render, ScrollHandle, ScrollStrategy, UniformListScrollHandle,
-    Window,
+    KeyDownEvent, MouseButton, PromptLevel, Render, ScrollHandle, ScrollStrategy,
+    UniformListScrollHandle, Window,
 };
 use nucleo_matcher::{Config, Matcher};
 
@@ -15,7 +15,8 @@ use crate::actions::{
     LintCollection, NewCollection, NewRequest, OpenCollection, OpenEnvironmentDoc,
     OpenEnvironmentPicker, OpenFolderDoc, OpenHistory, OpenRecentCollection, OpenRequestFile,
     OpenSettings, RenameRequest, RunActiveRequest, SelectEnvironment, SelectResponseSubtab,
-    ShowResolvedRequest, SwitchTab, ToggleCommandPalette, ToggleQuickOpen,
+    ShowResolvedRequest, SwitchTab, ToggleCommandPalette, ToggleDrawer, ToggleFolderCollapse,
+    ToggleQuickOpen, ToggleSidebar,
 };
 use crate::components::editor_text::EditorTextLayout;
 use crate::components::history_modal;
@@ -30,6 +31,15 @@ use crate::state::{ActiveFile, ActivityResult, AppState, Overlay, PromptKind, Vi
 use crate::text_field::TextField;
 use crate::theme::Theme;
 
+/// Which panel a drag-in-progress is resizing. Window interaction, not
+/// domain state — lives here next to `editor_mouse_selecting`, not on
+/// `AppState`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResizingPanel {
+    Sidebar,
+    Drawer,
+}
+
 pub struct EpistolaGui {
     pub(crate) state: AppState,
     pub(crate) editor_focus_handle: FocusHandle,
@@ -41,6 +51,7 @@ pub struct EpistolaGui {
     editor_scroll_handle: ScrollHandle,
     overlay_items: Vec<PickerItem>,
     overlay_matcher: Matcher,
+    pub(crate) resizing: Option<ResizingPanel>,
 }
 
 impl EpistolaGui {
@@ -63,6 +74,7 @@ impl EpistolaGui {
             editor_scroll_handle: ScrollHandle::new(),
             overlay_items: Vec::new(),
             overlay_matcher: Matcher::new(Config::DEFAULT),
+            resizing: None,
         }
     }
 }
@@ -602,6 +614,7 @@ impl Render for EpistolaGui {
         let is_fullscreen = window.is_fullscreen();
 
         let show_drawer = self.state.view == View::Workspace
+            && !self.state.drawer_collapsed
             && (self.state.active_file.is_request()
                 || !matches!(self.state.active_activity(), ActivityResult::Idle));
 
@@ -610,9 +623,13 @@ impl Render for EpistolaGui {
                 home::render_home(&self.state, &self.editor_focus_handle, cx).into_any_element()
             }
             View::Workspace => {
-                let editor_max_width = window.viewport_size().width
-                    - sidebar::SIDEBAR_WIDTH
-                    - activity_rail::RAIL_WIDTH;
+                let sidebar_width = if self.state.sidebar_collapsed {
+                    px(0.)
+                } else {
+                    self.state.sidebar_width
+                };
+                let editor_max_width =
+                    window.viewport_size().width - sidebar_width - activity_rail::RAIL_WIDTH;
                 let editor_max_width = if editor_max_width < px(0.) {
                     px(0.)
                 } else {
@@ -622,7 +639,9 @@ impl Render for EpistolaGui {
                     .flex()
                     .flex_1()
                     .min_h(px(0.))
-                    .child(sidebar::render_sidebar(&self.state, cx))
+                    .when(!self.state.sidebar_collapsed, |el| {
+                        el.child(sidebar::render_sidebar(&self.state, cx))
+                    })
                     .child(editor::render_editor(
                         &self.state,
                         self.editor_focus_handle.clone(),
@@ -644,6 +663,9 @@ impl Render for EpistolaGui {
             .on_key_down(cx.listener(|this, event, window, cx| {
                 this.handle_overlay_key_down(event, window, cx)
             }))
+            .on_mouse_move(cx.listener(EpistolaGui::on_root_mouse_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(EpistolaGui::stop_resizing))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(EpistolaGui::stop_resizing))
             .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
                 this.toggle_command_palette(window, cx)
             }))
@@ -727,6 +749,13 @@ impl Render for EpistolaGui {
             .on_action(
                 cx.listener(|this, _: &Dismiss, window, cx| this.dismiss_overlay(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _window, cx| this.toggle_sidebar(cx)))
+            .on_action(cx.listener(|this, _: &ToggleDrawer, _window, cx| this.toggle_drawer(cx)))
+            .on_action(
+                cx.listener(|this, action: &ToggleFolderCollapse, _window, cx| {
+                    this.toggle_folder_collapse(action.dir.clone(), cx);
+                }),
+            )
             .child(titlebar::render_titlebar(&self.state, is_fullscreen, cx))
             .child(
                 div()
@@ -740,6 +769,7 @@ impl Render for EpistolaGui {
                 el.child(response_drawer::render_response_drawer(
                     self.state.active_activity(),
                     self.state.response_subtab,
+                    self.state.drawer_height,
                     cx,
                 ))
             })

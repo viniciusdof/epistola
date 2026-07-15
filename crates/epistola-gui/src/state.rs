@@ -1,12 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use epistola_core::Response;
 use epistola_engine::history::HistoryEntry;
 use epistola_format::{FolderManifest, RequestFile};
+use gpui::Pixels;
 
 use crate::buffer::EditorBuffer;
 use crate::collection::{self, CollectionTree, RequestEntry};
+use crate::components::response_drawer;
 use crate::components::sidebar::{self, SidebarRow};
 use crate::execution;
 
@@ -107,6 +109,12 @@ pub struct AppState {
     pub url_previews: HashMap<PathBuf, UrlPreview>,
     pub history_entries: Vec<HistoryEntry>,
     pub sidebar_rows: Vec<SidebarRow>,
+    pub collapsed_folders: HashSet<PathBuf>,
+
+    pub sidebar_width: Pixels,
+    pub sidebar_collapsed: bool,
+    pub drawer_height: Pixels,
+    pub drawer_collapsed: bool,
 
     pub overlay_selected: usize,
     pub overlay_error: Option<String>,
@@ -130,6 +138,11 @@ impl AppState {
             url_previews: HashMap::new(),
             history_entries: Vec::new(),
             sidebar_rows: Vec::new(),
+            collapsed_folders: HashSet::new(),
+            sidebar_width: sidebar::SIDEBAR_WIDTH,
+            sidebar_collapsed: false,
+            drawer_height: response_drawer::DRAWER_HEIGHT,
+            drawer_collapsed: false,
             overlay_selected: 0,
             overlay_error: None,
         };
@@ -158,8 +171,9 @@ impl AppState {
             let _ = epistola_engine::recent::record(&cwd);
         }
         self.cwd = cwd;
-        self.sidebar_rows = sidebar::flatten(&collection);
         self.collection = collection;
+        self.collapsed_folders.clear();
+        self.refresh_sidebar_rows();
         self.view = View::Workspace;
         self.close_overlay();
         self.activity.clear();
@@ -394,7 +408,20 @@ impl AppState {
     /// `open_collection_at` does.
     pub fn refresh_collection(&mut self) {
         self.collection = collection::load(&self.cwd).map_err(|err| err.to_string());
-        self.sidebar_rows = sidebar::flatten(&self.collection);
+        self.refresh_sidebar_rows();
+    }
+
+    fn refresh_sidebar_rows(&mut self) {
+        self.sidebar_rows = sidebar::flatten(&self.collection, &self.collapsed_folders);
+    }
+
+    /// Toggles whether `dir`'s children are hidden in the sidebar. Session-only:
+    /// reopening the collection resets it, same as any other tree navigation state.
+    pub fn toggle_folder_collapse(&mut self, dir: PathBuf) {
+        if !self.collapsed_folders.remove(&dir) {
+            self.collapsed_folders.insert(dir);
+        }
+        self.refresh_sidebar_rows();
     }
 
     /// Points the tab (and any activity/buffer) that held `old` at `new_path`
