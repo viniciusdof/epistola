@@ -4,7 +4,7 @@ use gpui::{
 
 use crate::actions::{
     Backspace, Copy, Cut, Delete, End, Home, InsertNewline, MoveDown, MoveLeft, MoveRight, MoveUp,
-    Paste, Save, SelectAll, SelectDown, SelectLeft, SelectRight, SelectUp,
+    Paste, Redo, Save, SelectAll, SelectDown, SelectLeft, SelectRight, SelectUp, Undo,
 };
 use crate::buffer::EditorBuffer;
 use crate::editor_save;
@@ -27,6 +27,7 @@ impl EpistolaGui {
 
     pub(crate) fn move_left(&mut self, _: &MoveLeft, _window: &mut Window, cx: &mut Context<Self>) {
         self.with_active_buffer(|buffer| {
+            buffer.desired_col = None;
             if buffer.selected_range.is_empty() {
                 let prev = buffer.previous_boundary(buffer.cursor_offset());
                 buffer.move_to(prev);
@@ -44,6 +45,7 @@ impl EpistolaGui {
         cx: &mut Context<Self>,
     ) {
         self.with_active_buffer(|buffer| {
+            buffer.desired_col = None;
             if buffer.selected_range.is_empty() {
                 let next = buffer.next_boundary(buffer.cursor_offset());
                 buffer.move_to(next);
@@ -56,12 +58,7 @@ impl EpistolaGui {
 
     pub(crate) fn move_up(&mut self, _: &MoveUp, _window: &mut Window, cx: &mut Context<Self>) {
         self.with_active_buffer(|buffer| {
-            let (line, col) = buffer.line_col_for_offset(buffer.cursor_offset());
-            let offset = if line == 0 {
-                0
-            } else {
-                buffer.offset_for_line_col(line - 1, col)
-            };
+            let offset = buffer.offset_vertical(-1);
             buffer.move_to(offset);
         });
         cx.notify();
@@ -69,8 +66,7 @@ impl EpistolaGui {
 
     pub(crate) fn move_down(&mut self, _: &MoveDown, _window: &mut Window, cx: &mut Context<Self>) {
         self.with_active_buffer(|buffer| {
-            let (line, col) = buffer.line_col_for_offset(buffer.cursor_offset());
-            let offset = buffer.offset_for_line_col(line + 1, col);
+            let offset = buffer.offset_vertical(1);
             buffer.move_to(offset);
         });
         cx.notify();
@@ -83,6 +79,7 @@ impl EpistolaGui {
         cx: &mut Context<Self>,
     ) {
         self.with_active_buffer(|buffer| {
+            buffer.desired_col = None;
             let prev = buffer.previous_boundary(buffer.cursor_offset());
             buffer.select_to(prev);
         });
@@ -96,6 +93,7 @@ impl EpistolaGui {
         cx: &mut Context<Self>,
     ) {
         self.with_active_buffer(|buffer| {
+            buffer.desired_col = None;
             let next = buffer.next_boundary(buffer.cursor_offset());
             buffer.select_to(next);
         });
@@ -104,12 +102,7 @@ impl EpistolaGui {
 
     pub(crate) fn select_up(&mut self, _: &SelectUp, _window: &mut Window, cx: &mut Context<Self>) {
         self.with_active_buffer(|buffer| {
-            let (line, col) = buffer.line_col_for_offset(buffer.cursor_offset());
-            let offset = if line == 0 {
-                0
-            } else {
-                buffer.offset_for_line_col(line - 1, col)
-            };
+            let offset = buffer.offset_vertical(-1);
             buffer.select_to(offset);
         });
         cx.notify();
@@ -122,8 +115,7 @@ impl EpistolaGui {
         cx: &mut Context<Self>,
     ) {
         self.with_active_buffer(|buffer| {
-            let (line, col) = buffer.line_col_for_offset(buffer.cursor_offset());
-            let offset = buffer.offset_for_line_col(line + 1, col);
+            let offset = buffer.offset_vertical(1);
             buffer.select_to(offset);
         });
         cx.notify();
@@ -144,6 +136,7 @@ impl EpistolaGui {
 
     pub(crate) fn home(&mut self, _: &Home, _window: &mut Window, cx: &mut Context<Self>) {
         self.with_active_buffer(|buffer| {
+            buffer.desired_col = None;
             let (line, _) = buffer.line_col_for_offset(buffer.cursor_offset());
             let offset = buffer.offset_for_line_col(line, 0);
             buffer.move_to(offset);
@@ -153,10 +146,21 @@ impl EpistolaGui {
 
     pub(crate) fn end(&mut self, _: &End, _window: &mut Window, cx: &mut Context<Self>) {
         self.with_active_buffer(|buffer| {
+            buffer.desired_col = None;
             let (line, _) = buffer.line_col_for_offset(buffer.cursor_offset());
             let offset = buffer.offset_for_line_col(line, usize::MAX);
             buffer.move_to(offset);
         });
+        cx.notify();
+    }
+
+    pub(crate) fn undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
+        self.with_active_buffer_if_editable(|buffer| buffer.undo());
+        cx.notify();
+    }
+
+    pub(crate) fn redo(&mut self, _: &Redo, _window: &mut Window, cx: &mut Context<Self>) {
+        self.with_active_buffer_if_editable(|buffer| buffer.redo());
         cx.notify();
     }
 
@@ -242,7 +246,7 @@ impl EpistolaGui {
 
     fn offset_for_point(&self, position: Point<Pixels>) -> Option<usize> {
         let layout = self.editor_layout.as_ref()?;
-        if layout.file != self.state.active_file {
+        if !layout.matches_file(&self.state.active_file) {
             return None;
         }
         Some(layout.offset_for_point(position))
@@ -261,6 +265,7 @@ impl EpistolaGui {
         self.editor_mouse_selecting = true;
         let shift = event.modifiers.shift;
         self.with_active_buffer(|buffer| {
+            buffer.desired_col = None;
             if shift {
                 buffer.select_to(offset);
             } else {

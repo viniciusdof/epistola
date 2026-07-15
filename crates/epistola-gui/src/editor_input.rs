@@ -46,6 +46,7 @@ impl EntityInputHandler for EpistolaGui {
     fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
         if let Some(buffer) = self.state.active_buffer_mut() {
             buffer.marked_range = None;
+            buffer.cancel_composition();
         }
     }
 
@@ -85,7 +86,7 @@ impl EntityInputHandler for EpistolaGui {
             .or_else(|| buffer.marked_range.clone())
             .unwrap_or_else(|| buffer.selected_range.clone());
 
-        buffer.text.replace_range(range.clone(), new_text);
+        buffer.set_marked_text(range.clone(), new_text);
         buffer.marked_range = if new_text.is_empty() {
             None
         } else {
@@ -94,9 +95,8 @@ impl EntityInputHandler for EpistolaGui {
         buffer.selected_range = new_selected_range_utf16
             .as_ref()
             .map(|range_utf16| buffer.range_from_utf16(range_utf16))
-            .map(|new_range| new_range.start + range.start..new_range.end + range.end)
+            .map(|new_range| range.start + new_range.start..range.start + new_range.end)
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
-        buffer.save_error = None;
         cx.notify();
     }
 
@@ -110,7 +110,7 @@ impl EntityInputHandler for EpistolaGui {
         let buffer = self.state.active_buffer()?;
         let range = buffer.range_from_utf16(&range_utf16);
         let layout = self.editor_layout.as_ref()?;
-        if layout.file != self.state.active_file {
+        if !layout.matches_file(&self.state.active_file) {
             return None;
         }
         layout.bounds_for_range(range)
@@ -124,7 +124,7 @@ impl EntityInputHandler for EpistolaGui {
     ) -> Option<usize> {
         let buffer = self.state.active_buffer()?;
         let layout = self.editor_layout.as_ref()?;
-        if layout.file != self.state.active_file {
+        if !layout.matches_file(&self.state.active_file) {
             return None;
         }
         Some(buffer.offset_to_utf16(layout.offset_for_point(point)))

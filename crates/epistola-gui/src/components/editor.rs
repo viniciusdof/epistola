@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use gpui::{div, prelude::*, px, Context, FocusHandle, IntoElement, MouseButton, Pixels};
+use gpui::{
+    div, prelude::*, px, Context, FocusHandle, IntoElement, MouseButton, Pixels, ScrollHandle,
+};
 
 use crate::actions::RunActiveRequest;
 use crate::components::editor_text::EditorTextElement;
@@ -61,31 +63,31 @@ fn split_trailing_comment(s: &str) -> (&str, Option<&str>) {
     (s, None)
 }
 
-fn tokenize_quoted_string(value: &str, spans: &mut Vec<(TokenKind, String)>) {
+fn tokenize_quoted_string(value: &str, spans: &mut Vec<(TokenKind, usize)>) {
     let mut rest = value;
     loop {
         let Some(start) = rest.find("{{") else {
-            spans.push((TokenKind::String, rest.to_string()));
+            spans.push((TokenKind::String, rest.len()));
             return;
         };
         if start > 0 {
-            spans.push((TokenKind::String, rest[..start].to_string()));
+            spans.push((TokenKind::String, start));
         }
         match rest[start..].find("}}") {
             Some(len) => {
                 let end = start + len + 2;
-                spans.push((TokenKind::Var, rest[start..end].to_string()));
+                spans.push((TokenKind::Var, end - start));
                 rest = &rest[end..];
             }
             None => {
-                spans.push((TokenKind::String, rest[start..].to_string()));
+                spans.push((TokenKind::String, rest.len() - start));
                 return;
             }
         }
     }
 }
 
-fn tokenize_value(value: &str, spans: &mut Vec<(TokenKind, String)>) {
+fn tokenize_value(value: &str, spans: &mut Vec<(TokenKind, usize)>) {
     if value.starts_with('"') {
         tokenize_quoted_string(value, spans);
         return;
@@ -95,50 +97,56 @@ fn tokenize_value(value: &str, spans: &mut Vec<(TokenKind, String)>) {
             .chars()
             .all(|c| c.is_ascii_digit() || c == '.' || c == '-');
     if value == "true" || value == "false" || is_number_like {
-        spans.push((TokenKind::Number, value.to_string()));
+        spans.push((TokenKind::Number, value.len()));
         return;
     }
     if !value.is_empty() {
-        spans.push((TokenKind::Plain, value.to_string()));
+        spans.push((TokenKind::Plain, value.len()));
     }
 }
 
-pub(crate) fn tokenize_line(line: &str) -> Vec<(TokenKind, String)> {
+/// Returns `(TokenKind, length)` spans that partition `line` exactly (lengths sum to
+/// `line.len()`), so callers can build `TextRun`s without allocating a copy of each token.
+pub(crate) fn tokenize_line(line: &str) -> Vec<(TokenKind, usize)> {
     let indent_len = line.len() - line.trim_start().len();
     let mut spans = Vec::new();
     if indent_len > 0 {
-        spans.push((TokenKind::Plain, line[..indent_len].to_string()));
+        spans.push((TokenKind::Plain, indent_len));
     }
     let rest = &line[indent_len..];
 
     if rest.starts_with('#') {
-        spans.push((TokenKind::Comment, rest.to_string()));
+        spans.push((TokenKind::Comment, rest.len()));
         return spans;
     }
     if rest.starts_with('[') {
         let (section, comment) = split_trailing_comment(rest);
-        spans.push((TokenKind::Section, section.to_string()));
+        spans.push((TokenKind::Section, section.len()));
         if let Some(comment) = comment {
-            spans.push((TokenKind::Plain, " ".to_string()));
-            spans.push((TokenKind::Comment, comment.to_string()));
+            spans.push((TokenKind::Plain, rest.len() - section.len() - comment.len()));
+            spans.push((TokenKind::Comment, comment.len()));
         }
         return spans;
     }
     if let Some(eq) = find_top_level_eq(rest) {
-        let key = &rest[..eq];
+        let key_trimmed = rest[..eq].trim_end();
         let value_part = rest[eq + 1..].trim_start();
-        spans.push((TokenKind::Key, key.trim_end().to_string()));
-        spans.push((TokenKind::Punct, " = ".to_string()));
+        let value_start = rest.len() - value_part.len();
+        spans.push((TokenKind::Key, key_trimmed.len()));
+        spans.push((TokenKind::Punct, value_start - key_trimmed.len()));
         let (value_code, comment) = split_trailing_comment(value_part);
         tokenize_value(value_code, &mut spans);
         if let Some(comment) = comment {
-            spans.push((TokenKind::Plain, " ".to_string()));
-            spans.push((TokenKind::Comment, comment.to_string()));
+            spans.push((
+                TokenKind::Plain,
+                value_part.len() - value_code.len() - comment.len(),
+            ));
+            spans.push((TokenKind::Comment, comment.len()));
         }
         return spans;
     }
     if !rest.is_empty() {
-        spans.push((TokenKind::Plain, rest.to_string()));
+        spans.push((TokenKind::Plain, rest.len()));
     }
     spans
 }
@@ -254,6 +262,7 @@ fn render_save_error(message: &str, theme: Theme) -> impl IntoElement {
 pub fn render_editor(
     state: &AppState,
     focus_handle: FocusHandle,
+    scroll_handle: ScrollHandle,
     max_width: Pixels,
     cx: &mut Context<EpistolaGui>,
 ) -> impl IntoElement {
@@ -263,9 +272,9 @@ pub fn render_editor(
     let mut body = div()
         .id("editor-code-view")
         .track_focus(&focus_handle)
+        .track_scroll(&scroll_handle)
         .flex_1()
         .overflow_y_scroll()
-        .overflow_x_scroll()
         .font_family("monospace")
         .text_size(px(13.))
         .py(px(10.));
@@ -276,6 +285,7 @@ pub fn render_editor(
                 gui: cx.entity(),
                 theme,
                 focus_handle: focus_handle.clone(),
+                scroll_handle,
             };
             body.key_context("Editor")
                 .on_action(cx.listener(EpistolaGui::backspace))
@@ -296,6 +306,8 @@ pub fn render_editor(
                 .on_action(cx.listener(EpistolaGui::cut))
                 .on_action(cx.listener(EpistolaGui::copy))
                 .on_action(cx.listener(EpistolaGui::save))
+                .on_action(cx.listener(EpistolaGui::undo))
+                .on_action(cx.listener(EpistolaGui::redo))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(EpistolaGui::on_editor_mouse_down),
@@ -348,4 +360,35 @@ pub fn render_editor(
             el.child(render_save_error(&message, theme))
         })
         .child(body)
+}
+
+#[cfg(test)]
+mod tokenize_tests {
+    use super::*;
+
+    fn spans_cover_line(line: &str) {
+        let total: usize = tokenize_line(line).iter().map(|(_, len)| len).sum();
+        assert_eq!(total, line.len(), "spans for {line:?} do not cover it");
+    }
+
+    #[test]
+    fn tokenize_line_spans_are_contiguous() {
+        for line in [
+            "",
+            "# a comment",
+            "[section]",
+            "[section]   # trailing comment",
+            "key = value",
+            "key=value",
+            "key   =   value",
+            "key = \"quoted {{var}} value\"",
+            "key = \"unterminated {{var\"",
+            "key = 42 # inline",
+            "key = true",
+            "    indented = 1",
+            "not a key value line",
+        ] {
+            spans_cover_line(line);
+        }
+    }
 }

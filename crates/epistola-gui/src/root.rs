@@ -5,7 +5,8 @@ use std::path::PathBuf;
 
 use gpui::{
     div, prelude::*, px, App, ClickEvent, Context, Entity, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, PromptLevel, Render, ScrollStrategy, UniformListScrollHandle, Window,
+    KeyDownEvent, PromptLevel, Render, ScrollHandle, ScrollStrategy, UniformListScrollHandle,
+    Window,
 };
 use nucleo_matcher::{Config, Matcher};
 
@@ -16,7 +17,7 @@ use crate::actions::{
     OpenSettings, RenameRequest, RunActiveRequest, SelectEnvironment, SelectResponseSubtab,
     ShowResolvedRequest, SwitchTab, ToggleCommandPalette, ToggleQuickOpen,
 };
-use crate::components::editor_text::EditorLayout;
+use crate::components::editor_text::EditorTextLayout;
 use crate::components::history_modal;
 use crate::components::picker::{filter_items, render_picker, PickerItem};
 use crate::components::prompt_modal::render_prompt_modal;
@@ -35,8 +36,9 @@ pub struct EpistolaGui {
     overlay_focus_handle: FocusHandle,
     overlay_input: Entity<TextField>,
     overlay_scroll: UniformListScrollHandle,
-    pub(crate) editor_layout: Option<EditorLayout>,
+    pub(crate) editor_layout: Option<EditorTextLayout>,
     pub(crate) editor_mouse_selecting: bool,
+    editor_scroll_handle: ScrollHandle,
     overlay_items: Vec<PickerItem>,
     overlay_matcher: Matcher,
 }
@@ -58,6 +60,7 @@ impl EpistolaGui {
             overlay_scroll: UniformListScrollHandle::default(),
             editor_layout: None,
             editor_mouse_selecting: false,
+            editor_scroll_handle: ScrollHandle::new(),
             overlay_items: Vec::new(),
             overlay_matcher: Matcher::new(Config::DEFAULT),
         }
@@ -623,6 +626,7 @@ impl Render for EpistolaGui {
                     .child(editor::render_editor(
                         &self.state,
                         self.editor_focus_handle.clone(),
+                        self.editor_scroll_handle.clone(),
                         editor_max_width,
                         cx,
                     ))

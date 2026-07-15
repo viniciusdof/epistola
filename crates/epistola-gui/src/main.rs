@@ -22,8 +22,8 @@ use gpui::{
 use actions::{
     Backspace, Copy, Cut, CycleEnvironment, Delete, Dismiss, End, GoHome, Home, InsertNewline,
     LintCollection, MoveDown, MoveLeft, MoveRight, MoveUp, OpenCollection, OpenSettings, Paste,
-    RunActiveRequest, Save, SelectAll, SelectDown, SelectLeft, SelectRight, SelectUp,
-    ShowResolvedRequest, ToggleCommandPalette, ToggleQuickOpen,
+    Redo, RunActiveRequest, Save, SelectAll, SelectDown, SelectLeft, SelectRight, SelectUp,
+    ShowResolvedRequest, ToggleCommandPalette, ToggleQuickOpen, Undo,
 };
 use assets::Assets;
 use root::EpistolaGui;
@@ -56,6 +56,8 @@ fn main() {
                 KeyBinding::new("cmd-c", Copy, Some("Editor")),
                 KeyBinding::new("cmd-x", Cut, Some("Editor")),
                 KeyBinding::new("cmd-s", Save, Some("Editor")),
+                KeyBinding::new("cmd-z", Undo, Some("Editor")),
+                KeyBinding::new("cmd-shift-z", Redo, Some("Editor")),
                 KeyBinding::new("backspace", Backspace, Some("TextField")),
                 KeyBinding::new("delete", Delete, Some("TextField")),
                 KeyBinding::new("left", MoveLeft, Some("TextField")),
@@ -68,6 +70,8 @@ fn main() {
                 KeyBinding::new("cmd-v", Paste, Some("TextField")),
                 KeyBinding::new("cmd-c", Copy, Some("TextField")),
                 KeyBinding::new("cmd-x", Cut, Some("TextField")),
+                KeyBinding::new("cmd-z", Undo, Some("TextField")),
+                KeyBinding::new("cmd-shift-z", Redo, Some("TextField")),
                 KeyBinding::new("cmd-k", ToggleCommandPalette, None),
                 KeyBinding::new("cmd-p", ToggleQuickOpen, None),
                 KeyBinding::new("cmd-,", OpenSettings, None),

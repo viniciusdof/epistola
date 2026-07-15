@@ -26,6 +26,8 @@ actions!(
         Cut,
         Copy,
         Save,
+        Undo,
+        Redo,
     ]
 );
 

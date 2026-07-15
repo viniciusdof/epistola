@@ -9,8 +9,8 @@ use gpui::{
 };
 
 use crate::actions::{
-    Backspace, Copy, Cut, Delete, End, Home, MoveLeft, MoveRight, Paste, SelectAll, SelectLeft,
-    SelectRight,
+    Backspace, Copy, Cut, Delete, End, Home, MoveLeft, MoveRight, Paste, Redo, SelectAll,
+    SelectLeft, SelectRight, Undo,
 };
 use crate::buffer::EditorBuffer;
 use crate::theme::Theme;
@@ -41,9 +41,7 @@ impl TextField {
     }
 
     pub fn set_text(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
-        let text = text.into();
-        self.buffer.move_to(text.len());
-        self.buffer.text = text;
+        self.buffer.set_text(text.into());
         cx.notify();
     }
 
@@ -161,6 +159,16 @@ impl TextField {
         self.insert(&text, cx);
     }
 
+    fn undo(&mut self, _: &Undo, _window: &mut Window, cx: &mut Context<Self>) {
+        self.buffer.undo();
+        cx.notify();
+    }
+
+    fn redo(&mut self, _: &Redo, _window: &mut Window, cx: &mut Context<Self>) {
+        self.buffer.redo();
+        cx.notify();
+    }
+
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
         if self.buffer.text.is_empty() {
             return 0;
@@ -258,6 +266,7 @@ impl EntityInputHandler for TextField {
 
     fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
         self.buffer.marked_range = None;
+        self.buffer.cancel_composition();
     }
 
     fn replace_text_in_range(
@@ -292,7 +301,7 @@ impl EntityInputHandler for TextField {
             .unwrap_or_else(|| self.buffer.selected_range.clone());
         let new_text = new_text.replace('\n', "");
 
-        self.buffer.text.replace_range(range.clone(), &new_text);
+        self.buffer.set_marked_text(range.clone(), &new_text);
         self.buffer.marked_range = if new_text.is_empty() {
             None
         } else {
@@ -550,6 +559,8 @@ impl Render for TextField {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
