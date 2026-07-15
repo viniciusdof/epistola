@@ -1,61 +1,44 @@
 use std::collections::HashMap;
 
-use minijinja::Environment;
+use minijinja::{Environment, ErrorKind, UndefinedBehavior};
 
 use crate::body::Body;
 use crate::error::InterpolationError;
 use crate::request::{Header, Request};
 use crate::traits::VariableResolver;
 
-fn is_simple_variable_name(candidate: &str) -> bool {
-    let mut chars = candidate.chars();
-    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-/// Returns the raw (trimmed, unresolved) content of every `{{ ... }}`
-/// placeholder in `input`, in order of appearance.
-fn scan_placeholders(input: &str) -> Vec<&str> {
-    let mut found = Vec::new();
-    let mut rest = input;
-    while let Some(start) = rest.find("{{") {
-        let after_open = &rest[start + 2..];
-        match after_open.find("}}") {
-            Some(end) => {
-                found.push(after_open[..end].trim());
-                rest = &after_open[end + 2..];
-            }
-            None => break, // unterminated `{{` — minijinja itself will report this clearly
-        }
-    }
-    found
-}
-
-/// Substitutes every `{{ name }}` placeholder using `resolver`, then
-/// renders through minijinja. Only bare variable names are supported —
-/// `{{ x | upper }}` errors as `UnsupportedExpression` rather than being
-/// silently accepted. Fails fast with `UnknownVariable` on the first
-/// unresolved placeholder.
 pub fn interpolate(
     input: &str,
     resolver: &dyn VariableResolver,
 ) -> Result<String, InterpolationError> {
-    let mut context = HashMap::new();
-    for placeholder in scan_placeholders(input) {
-        if !is_simple_variable_name(placeholder) {
-            return Err(InterpolationError::UnsupportedExpression(
-                placeholder.to_string(),
-            ));
-        }
-        let value = resolver
-            .resolve(placeholder)
-            .ok_or_else(|| InterpolationError::UnknownVariable(placeholder.to_string()))?;
-        context.insert(placeholder.to_string(), value);
-    }
+    let mut env = Environment::empty();
+    env.set_undefined_behavior(UndefinedBehavior::Strict);
+    let template = env
+        .template_from_str(input)
+        .map_err(InterpolationError::Render)?;
 
-    let env = Environment::new();
-    env.render_str(input, context)
-        .map_err(InterpolationError::Render)
+    let mut context = HashMap::new();
+    let mut unresolved = Vec::new();
+    for name in template.undeclared_variables(false) {
+        match resolver.resolve(&name) {
+            Some(value) => {
+                context.insert(name, value);
+            }
+            None => unresolved.push(name),
+        }
+    }
+    unresolved.sort();
+
+    template.render(context).map_err(|err| match err.kind() {
+        ErrorKind::UndefinedError => match unresolved.into_iter().next() {
+            Some(name) => InterpolationError::UnknownVariable(name),
+            None => InterpolationError::Render(err),
+        },
+        ErrorKind::UnknownFilter | ErrorKind::UnknownTest | ErrorKind::UnknownFunction => {
+            InterpolationError::UnsupportedExpression(err.to_string())
+        }
+        _ => InterpolationError::Render(err),
+    })
 }
 
 /// Interpolates every string on a `Request` (url, header values, query
@@ -163,6 +146,19 @@ mod tests {
         let r = resolver(&[]);
         let err = interpolate("broken {{ open", &r).unwrap_err();
         assert!(matches!(err, InterpolationError::Render(_)));
+    }
+
+    #[test]
+    fn evaluates_a_pure_expression_instead_of_rejecting_it() {
+        let r = resolver(&[]);
+        assert_eq!(interpolate("{{ 1 + 2 }}", &r).unwrap(), "3");
+    }
+
+    #[test]
+    fn rejects_an_unknown_function_call_as_unsupported() {
+        let r = resolver(&[]);
+        let err = interpolate("{{ range(3) }}", &r).unwrap_err();
+        assert!(matches!(err, InterpolationError::UnsupportedExpression(_)));
     }
 
     #[test]
