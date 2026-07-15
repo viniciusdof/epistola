@@ -7,6 +7,7 @@ use epistola_format::{FolderManifest, RequestFile};
 
 use crate::buffer::EditorBuffer;
 use crate::collection::{self, CollectionTree, RequestEntry};
+use crate::components::sidebar::{self, SidebarRow};
 use crate::execution;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -53,10 +54,8 @@ pub enum Overlay {
     Prompt(PromptKind),
 }
 
-/// A single text-field prompt, rendered by `components::prompt_modal`. The
-/// entered text lives in `AppState::overlay_query` — same field the command
-/// palette/quick open already use for their search query, since a prompt is
-/// just a single-field text overlay by another name.
+/// A single-field prompt, rendered by `components::prompt_modal`. The
+/// entered text lives on `EpistolaGui::overlay_input`
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum PromptKind {
     New { dir: String },
@@ -107,8 +106,8 @@ pub struct AppState {
     pub editor_buffers: HashMap<ActiveFile, EditorBuffer>,
     pub url_previews: HashMap<PathBuf, UrlPreview>,
     pub history_entries: Vec<HistoryEntry>,
+    pub sidebar_rows: Vec<SidebarRow>,
 
-    pub overlay_query: String,
     pub overlay_selected: usize,
     pub overlay_error: Option<String>,
 }
@@ -130,7 +129,7 @@ impl AppState {
             editor_buffers: HashMap::new(),
             url_previews: HashMap::new(),
             history_entries: Vec::new(),
-            overlay_query: String::new(),
+            sidebar_rows: Vec::new(),
             overlay_selected: 0,
             overlay_error: None,
         };
@@ -159,6 +158,7 @@ impl AppState {
             let _ = epistola_engine::recent::record(&cwd);
         }
         self.cwd = cwd;
+        self.sidebar_rows = sidebar::flatten(&collection);
         self.collection = collection;
         self.view = View::Workspace;
         self.close_overlay();
@@ -378,14 +378,12 @@ impl AppState {
 
     pub fn open_overlay(&mut self, overlay: Overlay) {
         self.overlay = Some(overlay);
-        self.overlay_query.clear();
         self.overlay_selected = 0;
         self.overlay_error = None;
     }
 
     pub fn close_overlay(&mut self) {
         self.overlay = None;
-        self.overlay_query.clear();
         self.overlay_selected = 0;
         self.overlay_error = None;
         self.history_entries.clear();
@@ -396,6 +394,7 @@ impl AppState {
     /// `open_collection_at` does.
     pub fn refresh_collection(&mut self) {
         self.collection = collection::load(&self.cwd).map_err(|err| err.to_string());
+        self.sidebar_rows = sidebar::flatten(&self.collection);
     }
 
     /// Points the tab (and any activity/buffer) that held `old` at `new_path`

@@ -1,11 +1,10 @@
 pub mod activity_rail;
 pub mod editor;
 pub mod editor_text;
-pub mod env_popover;
 pub mod history_modal;
 pub mod home;
 pub mod kit;
-pub mod palette;
+pub mod picker;
 pub mod prompt_modal;
 pub mod response_drawer;
 pub mod sidebar;

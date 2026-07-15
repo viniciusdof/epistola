@@ -1,7 +1,7 @@
 use epistola_core::Method;
 use gpui::{
-    div, prelude::*, px, svg, App, ClickEvent, Hsla, IntoElement, Pixels, RenderOnce, SharedString,
-    Svg, Window,
+    div, prelude::*, px, svg, AnyView, App, ClickEvent, Context, Hsla, IntoElement, Pixels, Render,
+    RenderOnce, SharedString, Svg, Window,
 };
 
 use crate::theme::Theme;
@@ -12,6 +12,64 @@ pub fn dispatch_on_click<A: gpui::Action + Clone>(
     action: A,
 ) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
     move |_event, window, cx| window.dispatch_action(Box::new(action.clone()), cx)
+}
+
+/// A confirm/cancel-style text button.
+pub fn button(
+    label: &'static str,
+    theme: Theme,
+    emphasize: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(label)
+        .px(px(12.))
+        .py(px(6.))
+        .rounded(px(6.))
+        .text_size(px(12.5))
+        .cursor_pointer()
+        .when(emphasize, |el| {
+            el.bg(theme.accent)
+                .text_color(theme.accent_ink)
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+        })
+        .when(!emphasize, |el| {
+            el.text_color(theme.text_muted)
+                .hover(|el| el.bg(theme.surface))
+        })
+        .on_click(move |event, window, cx| {
+            cx.stop_propagation();
+            on_click(event, window, cx);
+        })
+        .child(label)
+}
+
+struct TooltipLabel {
+    text: SharedString,
+}
+
+impl Render for TooltipLabel {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = *cx.global::<Theme>();
+        div()
+            .px(px(8.))
+            .py(px(5.))
+            .bg(theme.surface_raised)
+            .border_1()
+            .border_color(theme.border)
+            .rounded(px(5.))
+            .text_size(px(11.5))
+            .text_color(theme.text)
+            .child(self.text.clone())
+    }
+}
+
+/// A plain-text tooltip builder for `div().tooltip(...)`.
+pub fn tooltip_text(
+    text: impl Into<SharedString>,
+) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let text = text.into();
+    move |_window, cx| cx.new(|_| TooltipLabel { text: text.clone() }).into()
 }
 
 /// Lucide icons vendored under `assets/icons/`, served through
@@ -206,7 +264,8 @@ impl RenderOnce for RailButton {
                 el.cursor_pointer().hover(|el| el.bg(theme.surface_raised))
             })
             .when_some(self.on_click, |el, handler| el.on_click(handler))
-            .aria_label(self.tooltip)
+            .aria_label(self.tooltip.clone())
+            .tooltip(tooltip_text(self.tooltip))
             .child(icon(
                 self.icon_name,
                 px(16.),

@@ -1,17 +1,30 @@
 use epistola_engine::history::HistoryEntry;
-use gpui::{div, prelude::*, px, App, ClickEvent, FocusHandle, IntoElement, SharedString, Window};
+use gpui::{
+    div, prelude::*, px, uniform_list, App, ClickEvent, FocusHandle, IntoElement, SharedString,
+    UniformListScrollHandle, Window,
+};
 use time::OffsetDateTime;
 
 use crate::theme::Theme;
 
+const ROW_HEIGHT: f32 = 46.;
+const MAX_VISIBLE_ROWS: usize = 8;
+
+#[allow(clippy::too_many_arguments)]
 pub fn render_history_modal(
     entries: &[HistoryEntry],
     selected: usize,
+    scroll: &UniformListScrollHandle,
     theme: Theme,
     focus_handle: &FocusHandle,
     on_dismiss: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let empty = entries.is_empty();
+    let count = entries.len();
+    let rows: Vec<HistoryEntry> = entries.to_vec();
+    let scroll = scroll.clone();
+    let list_height = px(ROW_HEIGHT * count.clamp(1, MAX_VISIBLE_ROWS) as f32 + 12.);
+
     div()
         .id("history-backdrop")
         .track_focus(focus_handle)
@@ -54,29 +67,30 @@ pub fn render_history_modal(
                                 .child(format!("{} run(s)", entries.len())),
                         ),
                 )
-                .child(
-                    div()
-                        .id("history-list")
-                        .p(px(6.))
-                        .max_h(px(380.))
-                        .overflow_y_scroll()
-                        .children(
-                            entries
-                                .iter()
-                                .enumerate()
-                                .map(|(i, entry)| render_row(entry, theme, i == selected)),
-                        )
-                        .when(empty, |el| {
-                            el.child(
-                                div()
-                                    .py(px(26.))
-                                    .text_align(gpui::TextAlign::Center)
-                                    .text_color(theme.text_faint)
-                                    .text_size(px(12.5))
-                                    .child("No runs recorded yet."),
-                            )
-                        }),
-                )
+                .when(empty, |el| {
+                    el.child(
+                        div()
+                            .py(px(26.))
+                            .text_align(gpui::TextAlign::Center)
+                            .text_color(theme.text_faint)
+                            .text_size(px(12.5))
+                            .child("No runs recorded yet."),
+                    )
+                })
+                .when(!empty, |el| {
+                    el.child(
+                        div().id("history-list").p(px(6.)).child(
+                            uniform_list("history-rows", count, move |range, _window, _cx| {
+                                range
+                                    .map(|i| render_row(&rows[i], theme, i == selected))
+                                    .collect()
+                            })
+                            .h(list_height)
+                            .w_full()
+                            .track_scroll(&scroll),
+                        ),
+                    )
+                })
                 .child(
                     div()
                         .px(px(14.))
@@ -106,11 +120,12 @@ fn render_row(entry: &HistoryEntry, theme: Theme, is_selected: bool) -> impl Int
 
     div()
         .id(SharedString::from(format!("history-row-{url}-{timestamp}")))
+        .w_full()
+        .h(px(ROW_HEIGHT))
         .flex()
         .items_center()
         .gap(px(11.))
         .px(px(10.))
-        .py(px(9.))
         .rounded(px(6.))
         .when(is_selected, |el| el.bg(theme.surface))
         .text_size(px(12.))

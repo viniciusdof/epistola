@@ -9,6 +9,7 @@ mod editor_save;
 mod execution;
 mod root;
 mod state;
+mod text_field;
 mod theme;
 
 use std::env;
@@ -55,6 +56,18 @@ fn main() {
                 KeyBinding::new("cmd-c", Copy, Some("Editor")),
                 KeyBinding::new("cmd-x", Cut, Some("Editor")),
                 KeyBinding::new("cmd-s", Save, Some("Editor")),
+                KeyBinding::new("backspace", Backspace, Some("TextField")),
+                KeyBinding::new("delete", Delete, Some("TextField")),
+                KeyBinding::new("left", MoveLeft, Some("TextField")),
+                KeyBinding::new("right", MoveRight, Some("TextField")),
+                KeyBinding::new("shift-left", SelectLeft, Some("TextField")),
+                KeyBinding::new("shift-right", SelectRight, Some("TextField")),
+                KeyBinding::new("cmd-a", SelectAll, Some("TextField")),
+                KeyBinding::new("home", Home, Some("TextField")),
+                KeyBinding::new("end", End, Some("TextField")),
+                KeyBinding::new("cmd-v", Paste, Some("TextField")),
+                KeyBinding::new("cmd-c", Copy, Some("TextField")),
+                KeyBinding::new("cmd-x", Cut, Some("TextField")),
                 KeyBinding::new("cmd-k", ToggleCommandPalette, None),
                 KeyBinding::new("cmd-p", ToggleQuickOpen, None),
                 KeyBinding::new("cmd-,", OpenSettings, None),

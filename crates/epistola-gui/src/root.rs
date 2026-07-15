@@ -4,8 +4,8 @@
 use std::path::PathBuf;
 
 use gpui::{
-    div, prelude::*, px, App, ClickEvent, Context, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, PromptLevel, Render, Window,
+    div, prelude::*, px, App, ClickEvent, Context, Entity, FocusHandle, Focusable, IntoElement,
+    KeyDownEvent, PromptLevel, Render, ScrollStrategy, UniformListScrollHandle, Window,
 };
 use nucleo_matcher::{Config, Matcher};
 
@@ -17,9 +17,8 @@ use crate::actions::{
     ShowResolvedRequest, SwitchTab, ToggleCommandPalette, ToggleQuickOpen,
 };
 use crate::components::editor_text::EditorLayout;
-use crate::components::env_popover;
 use crate::components::history_modal;
-use crate::components::palette::{filter_items, render_palette_overlay, PaletteItem};
+use crate::components::picker::{filter_items, render_picker, PickerItem};
 use crate::components::prompt_modal::render_prompt_modal;
 use crate::components::{
     activity_rail, editor, home, response_drawer, sidebar, statusbar, titlebar,
@@ -27,24 +26,36 @@ use crate::components::{
 use crate::editor_save;
 use crate::execution;
 use crate::state::{ActiveFile, ActivityResult, AppState, Overlay, PromptKind, View};
+use crate::text_field::TextField;
 use crate::theme::Theme;
 
 pub struct EpistolaGui {
     pub(crate) state: AppState,
     pub(crate) editor_focus_handle: FocusHandle,
     overlay_focus_handle: FocusHandle,
+    overlay_input: Entity<TextField>,
+    overlay_scroll: UniformListScrollHandle,
     pub(crate) editor_layout: Option<EditorLayout>,
     pub(crate) editor_mouse_selecting: bool,
-    overlay_items: Vec<PaletteItem>,
+    overlay_items: Vec<PickerItem>,
     overlay_matcher: Matcher,
 }
 
 impl EpistolaGui {
     pub fn new(cwd: PathBuf, cx: &mut Context<Self>) -> Self {
+        let overlay_input = cx.new(|cx| TextField::new("", cx));
+        cx.observe(&overlay_input, |this, _field, cx| {
+            this.refresh_overlay_items(cx);
+            cx.notify();
+        })
+        .detach();
+
         Self {
             state: AppState::new(cwd),
             editor_focus_handle: cx.focus_handle(),
             overlay_focus_handle: cx.focus_handle(),
+            overlay_input,
+            overlay_scroll: UniformListScrollHandle::default(),
             editor_layout: None,
             editor_mouse_selecting: false,
             overlay_items: Vec::new(),
@@ -62,7 +73,27 @@ impl Focusable for EpistolaGui {
 impl EpistolaGui {
     fn open_overlay(&mut self, overlay: Overlay, window: &mut Window, cx: &mut Context<Self>) {
         self.state.open_overlay(overlay);
+        self.overlay_scroll = UniformListScrollHandle::default();
         window.focus(&self.overlay_focus_handle, cx);
+        cx.notify();
+    }
+
+    /// Opens an overlay whose query/value is typed into the shared `overlay_input` field.
+    fn open_text_overlay(
+        &mut self,
+        overlay: Overlay,
+        placeholder: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.state.open_overlay(overlay);
+        self.overlay_scroll = UniformListScrollHandle::default();
+        self.overlay_input.update(cx, |field, cx| {
+            field.set_placeholder(placeholder.to_string(), cx);
+            field.clear(cx);
+        });
+        window.focus(&self.overlay_input.focus_handle(cx), cx);
+        self.refresh_overlay_items(cx);
         cx.notify();
     }
 
@@ -76,8 +107,7 @@ impl EpistolaGui {
         if self.state.overlay == Some(Overlay::CommandPalette) {
             self.close_overlay(window, cx);
         } else {
-            self.open_overlay(Overlay::CommandPalette, window, cx);
-            self.refresh_overlay_items();
+            self.open_text_overlay(Overlay::CommandPalette, "Type a command…", window, cx);
         }
     }
 
@@ -85,13 +115,17 @@ impl EpistolaGui {
         if self.state.overlay == Some(Overlay::QuickOpen) {
             self.close_overlay(window, cx);
         } else {
-            self.open_overlay(Overlay::QuickOpen, window, cx);
-            self.refresh_overlay_items();
+            self.open_text_overlay(Overlay::QuickOpen, "Go to request…", window, cx);
         }
     }
 
     fn open_environment_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_overlay(Overlay::EnvironmentPicker, window, cx);
+        self.open_text_overlay(
+            Overlay::EnvironmentPicker,
+            "Filter environments…",
+            window,
+            cx,
+        );
     }
 
     fn open_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -107,14 +141,15 @@ impl EpistolaGui {
         self.open_overlay(Overlay::History, window, cx);
     }
 
-    fn refresh_overlay_items(&mut self) {
+    fn refresh_overlay_items(&mut self, cx: &mut Context<Self>) {
         let items = match self.state.overlay {
             Some(Overlay::CommandPalette) => command_palette_items(&self.state),
             Some(Overlay::QuickOpen) => quick_open_items(&self.state),
+            Some(Overlay::EnvironmentPicker) => environment_picker_items(&self.state),
             _ => Vec::new(),
         };
-        self.overlay_items =
-            filter_items(&mut self.overlay_matcher, items, &self.state.overlay_query);
+        let query = self.overlay_input.read(cx).text().to_string();
+        self.overlay_items = filter_items(&mut self.overlay_matcher, items, &query);
     }
 
     fn open_settings(&mut self, cx: &mut Context<Self>) {
@@ -216,7 +251,12 @@ impl EpistolaGui {
 
     fn start_new_request_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let dir = self.default_new_request_dir();
-        self.open_overlay(Overlay::Prompt(PromptKind::New { dir }), window, cx);
+        self.open_text_overlay(
+            Overlay::Prompt(PromptKind::New { dir }),
+            "Request name…",
+            window,
+            cx,
+        );
     }
 
     fn start_rename_request_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -227,8 +267,14 @@ impl EpistolaGui {
         else {
             return;
         };
-        self.open_overlay(Overlay::Prompt(PromptKind::Rename { path }), window, cx);
-        self.state.overlay_query = name;
+        self.open_text_overlay(
+            Overlay::Prompt(PromptKind::Rename { path }),
+            "Request name…",
+            window,
+            cx,
+        );
+        self.overlay_input
+            .update(cx, |field, cx| field.set_text(name, cx));
     }
 
     fn start_duplicate_request_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -239,8 +285,14 @@ impl EpistolaGui {
         else {
             return;
         };
-        self.open_overlay(Overlay::Prompt(PromptKind::Duplicate { path }), window, cx);
-        self.state.overlay_query = suggested;
+        self.open_text_overlay(
+            Overlay::Prompt(PromptKind::Duplicate { path }),
+            "Request name…",
+            window,
+            cx,
+        );
+        self.overlay_input
+            .update(cx, |field, cx| field.set_text(suggested, cx));
     }
 
     fn start_delete_request_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -291,7 +343,7 @@ impl EpistolaGui {
     }
 
     fn submit_prompt(&mut self, kind: PromptKind, window: &mut Window, cx: &mut Context<Self>) {
-        let name = self.state.overlay_query.trim().to_string();
+        let name = self.overlay_input.read(cx).text().trim().to_string();
         if name.is_empty() {
             self.state.overlay_error = Some("Name can't be empty".to_string());
             cx.notify();
@@ -409,13 +461,9 @@ impl EpistolaGui {
 
     fn overlay_item_count(&self) -> usize {
         match self.state.overlay {
-            Some(Overlay::CommandPalette) | Some(Overlay::QuickOpen) => self.overlay_items.len(),
-            Some(Overlay::EnvironmentPicker) => self
-                .state
-                .collection
-                .as_ref()
-                .map(|collection| collection.environments.len())
-                .unwrap_or(0),
+            Some(Overlay::CommandPalette)
+            | Some(Overlay::QuickOpen)
+            | Some(Overlay::EnvironmentPicker) => self.overlay_items.len(),
             Some(Overlay::History) => self.state.history_entries.len(),
             Some(Overlay::Prompt(_)) | None => 0,
         }
@@ -430,17 +478,9 @@ impl EpistolaGui {
         let current = self.state.overlay_selected as isize;
         let next = ((current + delta) % count + count) % count;
         self.state.overlay_selected = next as usize;
+        self.overlay_scroll
+            .scroll_to_item(next as usize, ScrollStrategy::Top);
         cx.notify();
-    }
-
-    pub(crate) fn activate_overlay_item(
-        &mut self,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.state.overlay_selected = index;
-        self.confirm_overlay_selection(window, cx);
     }
 
     fn confirm_overlay_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -449,24 +489,13 @@ impl EpistolaGui {
         };
         let selected = self.state.overlay_selected;
         match overlay {
-            Overlay::CommandPalette | Overlay::QuickOpen => {
+            Overlay::CommandPalette | Overlay::QuickOpen | Overlay::EnvironmentPicker => {
                 if let Some(item) = self.overlay_items.get(selected) {
                     let action = item.action.boxed_clone();
                     if item.closes_overlay {
                         self.close_overlay(window, cx);
                     }
                     window.dispatch_action(action, cx);
-                }
-            }
-            Overlay::EnvironmentPicker => {
-                let name = self
-                    .state
-                    .collection
-                    .as_ref()
-                    .ok()
-                    .and_then(|collection| collection.environments.get(selected).cloned());
-                if let Some(name) = name {
-                    self.select_environment(name, window, cx);
                 }
             }
             Overlay::Prompt(kind) => self.submit_prompt(kind, window, cx),
@@ -483,30 +512,10 @@ impl EpistolaGui {
         if self.state.overlay.is_none() {
             return;
         }
-        let has_query = matches!(
-            self.state.overlay,
-            Some(Overlay::CommandPalette) | Some(Overlay::QuickOpen) | Some(Overlay::Prompt(_))
-        );
         match event.keystroke.key.as_str() {
             "down" => self.move_overlay_selection(1, cx),
             "up" => self.move_overlay_selection(-1, cx),
             "enter" => self.confirm_overlay_selection(window, cx),
-            "backspace" if has_query => {
-                self.state.overlay_query.pop();
-                self.state.overlay_selected = 0;
-                self.refresh_overlay_items();
-                cx.notify();
-            }
-            _ if has_query => {
-                if let Some(ch) = event.keystroke.key_char.as_deref() {
-                    if !ch.is_empty() {
-                        self.state.overlay_query.push_str(ch);
-                        self.state.overlay_selected = 0;
-                        self.refresh_overlay_items();
-                        cx.notify();
-                    }
-                }
-            }
             _ => {}
         }
     }
@@ -528,29 +537,29 @@ fn format_lint_report(report: &epistola_engine::requests::LintReport) -> String 
     }
 }
 
-fn command_palette_items(state: &AppState) -> Vec<PaletteItem> {
+fn command_palette_items(state: &AppState) -> Vec<PickerItem> {
     let mut items = Vec::new();
 
     if state.active_request().is_some() {
-        items.push(PaletteItem::new("Run request", RunActiveRequest).shortcut("⌘⏎"));
-        items.push(PaletteItem::new("Show resolved request", ShowResolvedRequest).shortcut("⌘⇧R"));
-        items.push(PaletteItem::new("Rename Request", RenameRequest).keep_overlay_open());
-        items.push(PaletteItem::new("Duplicate Request", DuplicateRequest).keep_overlay_open());
-        items.push(PaletteItem::new("Delete Request", DeleteRequest).keep_overlay_open());
+        items.push(PickerItem::new("Run request", RunActiveRequest).detail("⌘⏎"));
+        items.push(PickerItem::new("Show resolved request", ShowResolvedRequest).detail("⌘⇧R"));
+        items.push(PickerItem::new("Rename Request", RenameRequest).keep_overlay_open());
+        items.push(PickerItem::new("Duplicate Request", DuplicateRequest).keep_overlay_open());
+        items.push(PickerItem::new("Delete Request", DeleteRequest).keep_overlay_open());
     }
 
     if state.collection.is_ok() {
-        items.push(PaletteItem::new("New Request", NewRequest).keep_overlay_open());
-        items.push(PaletteItem::new("Lint collection", LintCollection).shortcut("⌘⇧L"));
-        items.push(PaletteItem::new("Switch environment", CycleEnvironment).shortcut("⌘E"));
+        items.push(PickerItem::new("New Request", NewRequest).keep_overlay_open());
+        items.push(PickerItem::new("Lint collection", LintCollection).detail("⌘⇧L"));
+        items.push(PickerItem::new("Switch environment", CycleEnvironment).detail("⌘E"));
     }
 
-    items.push(PaletteItem::new("Open settings", OpenSettings).shortcut("⌘,"));
+    items.push(PickerItem::new("Open settings", OpenSettings).detail("⌘,"));
 
     items
 }
 
-fn quick_open_items(state: &AppState) -> Vec<PaletteItem> {
+fn quick_open_items(state: &AppState) -> Vec<PickerItem> {
     let Ok(collection) = &state.collection else {
         return Vec::new();
     };
@@ -559,11 +568,27 @@ fn quick_open_items(state: &AppState) -> Vec<PaletteItem> {
         .into_iter()
         .map(|request| {
             let path = request.abs_path.clone();
-            PaletteItem::new(
+            PickerItem::new(
                 request.rel_path.display().to_string(),
                 OpenRequestFile { path },
             )
             .leading_method(request.method.clone())
+        })
+        .collect()
+}
+
+fn environment_picker_items(state: &AppState) -> Vec<PickerItem> {
+    let Ok(collection) = &state.collection else {
+        return Vec::new();
+    };
+    collection
+        .environments
+        .iter()
+        .map(|name| {
+            let active = state.environment.as_deref() == Some(name.as_str());
+            PickerItem::new(name.clone(), SelectEnvironment { name: name.clone() })
+                .leading_dot(active)
+                .detail(format!("{name}.toml"))
         })
         .collect()
 }
@@ -705,53 +730,15 @@ impl Render for EpistolaGui {
             })
             .child(statusbar::render_statusbar(&self.state, theme))
             .when_some(self.state.overlay.clone(), |el, overlay| match overlay {
-                Overlay::CommandPalette => {
+                Overlay::CommandPalette | Overlay::QuickOpen | Overlay::EnvironmentPicker => {
                     let selected = self.state.overlay_selection(self.overlay_items.len());
-                    el.child(render_palette_overlay(
-                        "Type a command…",
-                        &self.state.overlay_query,
+                    el.child(render_picker(
+                        &self.overlay_input,
                         &self.overlay_items,
                         selected,
+                        &self.overlay_scroll,
                         theme,
-                        &self.overlay_focus_handle,
                         cx,
-                    ))
-                }
-                Overlay::QuickOpen => {
-                    let selected = self.state.overlay_selection(self.overlay_items.len());
-                    el.child(render_palette_overlay(
-                        "Go to request…",
-                        &self.state.overlay_query,
-                        &self.overlay_items,
-                        selected,
-                        theme,
-                        &self.overlay_focus_handle,
-                        cx,
-                    ))
-                }
-                Overlay::EnvironmentPicker => {
-                    let environments = self
-                        .state
-                        .collection
-                        .as_ref()
-                        .map(|c| c.environments.clone())
-                        .unwrap_or_default();
-                    let current = self.state.environment.clone();
-                    let selected = self.state.overlay_selection(environments.len());
-                    let on_select = |name: String, window: &mut Window, cx: &mut App| {
-                        window.dispatch_action(Box::new(SelectEnvironment { name }), cx);
-                    };
-                    let on_dismiss = cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.close_overlay(window, cx)
-                    });
-                    el.child(env_popover::render_env_popover(
-                        &environments,
-                        current.as_deref(),
-                        selected,
-                        theme,
-                        &self.overlay_focus_handle,
-                        on_select,
-                        on_dismiss,
                     ))
                 }
                 Overlay::History => {
@@ -764,6 +751,7 @@ impl Render for EpistolaGui {
                     el.child(history_modal::render_history_modal(
                         &self.state.history_entries,
                         selected,
+                        &self.overlay_scroll,
                         theme,
                         &self.overlay_focus_handle,
                         on_dismiss,
@@ -792,12 +780,10 @@ impl Render for EpistolaGui {
                     });
                     el.child(render_prompt_modal(
                         title,
-                        "Request name…",
-                        &self.state.overlay_query,
+                        &self.overlay_input,
                         self.state.overlay_error.as_deref(),
                         confirm_label,
                         theme,
-                        &self.overlay_focus_handle,
                         on_confirm,
                         on_dismiss,
                         on_cancel,

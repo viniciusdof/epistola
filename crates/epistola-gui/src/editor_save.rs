@@ -80,7 +80,7 @@ mod tests {
             editor_buffers: HashMap::new(),
             url_previews: HashMap::new(),
             history_entries: Vec::new(),
-            overlay_query: String::new(),
+            sidebar_rows: Vec::new(),
             overlay_selected: 0,
             overlay_error: None,
         }
