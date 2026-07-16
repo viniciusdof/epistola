@@ -3,9 +3,7 @@ use std::path::PathBuf;
 
 use gpui::{div, prelude::*, px, uniform_list, Context, IntoElement, Pixels, SharedString};
 
-use crate::actions::{
-    OpenEnvironmentDoc, OpenFolderDoc, OpenRequestFile, OpenSettings, ToggleFolderCollapse,
-};
+use crate::actions::{OpenFolderDoc, OpenRequestFile, ToggleFolderCollapse};
 use crate::collection::{CollectionTree, FolderEntry, RequestEntry};
 use crate::components::kit::{dispatch_on_click, icon, IconName, MethodTag};
 use crate::components::resize_handle::{resize_handle, ResizeAxis};
@@ -31,9 +29,6 @@ pub enum SidebarRow {
         entry: RequestEntry,
         depth: usize,
     },
-    EmptyEnvironments,
-    Environment(String),
-    ConfigEntry,
     CollectionError(String),
 }
 
@@ -74,7 +69,6 @@ pub fn flatten(
     let mut rows = Vec::new();
     match collection {
         Ok(collection) => {
-            rows.push(SidebarRow::Section(collection.name.clone().into()));
             for request in &collection.requests {
                 rows.push(SidebarRow::Request {
                     entry: request.clone(),
@@ -84,22 +78,12 @@ pub fn flatten(
             for folder in &collection.folders {
                 flatten_folder(&collection.root, folder, 0, collapsed_folders, &mut rows);
             }
-            rows.push(SidebarRow::Section("environments".into()));
-            if collection.environments.is_empty() {
-                rows.push(SidebarRow::EmptyEnvironments);
-            } else {
-                for env in &collection.environments {
-                    rows.push(SidebarRow::Environment(env.clone()));
-                }
-            }
         }
         Err(message) => {
             rows.push(SidebarRow::Section("collection".into()));
             rows.push(SidebarRow::CollectionError(message.clone()));
         }
     }
-    rows.push(SidebarRow::Section("user".into()));
-    rows.push(SidebarRow::ConfigEntry);
     rows
 }
 
@@ -236,8 +220,6 @@ fn render_folder_row(
 struct ActiveMarkers {
     path: Option<PathBuf>,
     folder: Option<PathBuf>,
-    environment: Option<String>,
-    config: bool,
 }
 
 impl ActiveMarkers {
@@ -251,11 +233,6 @@ impl ActiveMarkers {
                 ActiveFile::Folder(path) => Some(path.clone()),
                 _ => None,
             },
-            environment: match &state.active_file {
-                ActiveFile::Environment(name) => Some(name.clone()),
-                _ => None,
-            },
-            config: state.active_file == ActiveFile::Config,
         }
     }
 }
@@ -263,7 +240,6 @@ impl ActiveMarkers {
 fn render_row(row: &SidebarRow, active: &ActiveMarkers, theme: Theme) -> gpui::AnyElement {
     let active_path = active.path.as_deref();
     let active_folder = active.folder.as_deref();
-    let active_environment = active.environment.as_deref();
 
     match row {
         SidebarRow::Section(label) => section_label(label.clone(), theme).into_any_element(),
@@ -287,34 +263,6 @@ fn render_row(row: &SidebarRow, active: &ActiveMarkers, theme: Theme) -> gpui::A
             let active = active_path == Some(entry.abs_path.as_path());
             render_request_row(entry, active, *depth, theme).into_any_element()
         }
-        SidebarRow::EmptyEnvironments => div()
-            .h(px(ROW_HEIGHT))
-            .flex()
-            .items_center()
-            .pl(px(26.))
-            .pr(px(10.))
-            .text_color(theme.text_faint)
-            .child("none yet")
-            .into_any_element(),
-        SidebarRow::Environment(env) => {
-            let active = active_environment == Some(env.as_str());
-            let name = env.clone();
-            selectable_row(active, 0., theme)
-                .id(SharedString::from(format!("sidebar-env-{env}")))
-                .on_click(dispatch_on_click(OpenEnvironmentDoc { name }))
-                .child(env.clone())
-                .into_any_element()
-        }
-        SidebarRow::ConfigEntry => selectable_row(active.config, 0., theme)
-            .id("sidebar-config")
-            .on_click(dispatch_on_click(OpenSettings))
-            .child(div().flex_none().w(px(34.)).child(icon(
-                IconName::Settings,
-                px(12.),
-                theme.text_muted,
-            )))
-            .child(div().child("config.toml"))
-            .into_any_element(),
         SidebarRow::CollectionError(message) => div()
             .h(px(ROW_HEIGHT))
             .flex()
@@ -337,13 +285,13 @@ pub fn render_sidebar(state: &AppState, cx: &mut Context<EpistolaGui>) -> impl I
         .id("sidebar")
         .flex()
         .flex_none()
-        .w(state.sidebar_width)
         .child(
             div()
                 .flex()
                 .flex_col()
-                .flex_1()
-                .min_w(px(0.))
+                .flex_none()
+                .w(state.sidebar_width)
+                .overflow_hidden()
                 .py(px(10.))
                 .text_size(px(12.5))
                 .child(

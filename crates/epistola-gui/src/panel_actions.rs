@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use gpui::{Context, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Window};
 
 use crate::components::resize_handle::{clamp_panel_size, HANDLE_SIZE};
-use crate::components::{activity_rail, statusbar, titlebar};
+use crate::components::{statusbar, titlebar};
 use crate::root::{EpistolaGui, ResizingPanel};
 
 const MIN_EDITOR_WIDTH: gpui::Pixels = gpui::px(240.);
@@ -43,8 +43,8 @@ impl EpistolaGui {
         let viewport = window.viewport_size();
         match panel {
             ResizingPanel::Sidebar => {
-                let candidate = event.position.x - activity_rail::RAIL_WIDTH;
-                let reserved = activity_rail::RAIL_WIDTH + HANDLE_SIZE + MIN_EDITOR_WIDTH;
+                let candidate = event.position.x;
+                let reserved = HANDLE_SIZE + MIN_EDITOR_WIDTH;
                 self.state.sidebar_width =
                     clamp_panel_size(candidate, gpui::px(0.), viewport.width, reserved);
             }

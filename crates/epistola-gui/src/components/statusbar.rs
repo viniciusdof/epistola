@@ -1,6 +1,8 @@
 use gpui::{div, prelude::*, px, IntoElement, Pixels};
 
-use crate::state::{ActiveFile, ActivityResult, AppState};
+use crate::actions::{ToggleDrawer, ToggleSidebar};
+use crate::components::kit::{dispatch_on_click, IconName, TitlebarIconButton};
+use crate::state::{ActivityResult, AppState};
 use crate::theme::Theme;
 
 pub const STATUSBAR_HEIGHT: Pixels = px(26.);
@@ -26,27 +28,34 @@ fn run_summary(activity: &ActivityResult) -> Option<String> {
 }
 
 pub fn render_statusbar(state: &AppState, theme: Theme) -> impl IntoElement {
-    let file_kind = match state.active_file {
-        ActiveFile::None => "",
-        ActiveFile::Config
-        | ActiveFile::Request(_)
-        | ActiveFile::Folder(_)
-        | ActiveFile::Environment(_) => "TOML",
-    };
-
     div()
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(14.))
         .h(STATUSBAR_HEIGHT)
-        .px(px(12.))
+        .px(px(10.))
         .border_t_1()
         .border_color(theme.border)
         .text_size(px(11.))
         .text_color(theme.text_muted)
-        .child(file_kind)
-        .child("UTF-8")
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(2.))
+                .child(
+                    TitlebarIconButton::new(IconName::PanelLeft, "Toggle Sidebar (⌘\\)")
+                        .size(px(18.))
+                        .active(!state.sidebar_collapsed)
+                        .on_click(dispatch_on_click(ToggleSidebar)),
+                )
+                .child(
+                    TitlebarIconButton::new(IconName::PanelBottom, "Toggle Response Panel (⌘J)")
+                        .size(px(18.))
+                        .active(!state.drawer_collapsed)
+                        .on_click(dispatch_on_click(ToggleDrawer)),
+                ),
+        )
         .child(div().flex_1())
         .when_some(run_summary(state.active_activity()), |el, summary| {
             el.child(summary)

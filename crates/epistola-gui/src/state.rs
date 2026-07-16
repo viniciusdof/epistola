@@ -52,6 +52,7 @@ pub enum Overlay {
     CommandPalette,
     QuickOpen,
     EnvironmentPicker,
+    SwitchCollection,
     History,
     Prompt(PromptKind),
 }
@@ -147,7 +148,9 @@ impl AppState {
             overlay_error: None,
         };
         state.open_collection_at(cwd);
-        state.view = View::Home;
+        if state.collection.is_err() {
+            state.view = View::Home;
+        }
         state
     }
 
@@ -415,8 +418,6 @@ impl AppState {
         self.sidebar_rows = sidebar::flatten(&self.collection, &self.collapsed_folders);
     }
 
-    /// Toggles whether `dir`'s children are hidden in the sidebar. Session-only:
-    /// reopening the collection resets it, same as any other tree navigation state.
     pub fn toggle_folder_collapse(&mut self, dir: PathBuf) {
         if !self.collapsed_folders.remove(&dir) {
             self.collapsed_folders.insert(dir);

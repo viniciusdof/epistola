@@ -1,7 +1,12 @@
 use gpui::{div, prelude::*, px, Context, IntoElement, Pixels, SharedString};
 
-use crate::actions::{OpenEnvironmentPicker, ToggleCommandPalette, ToggleQuickOpen};
-use crate::components::kit::{dispatch_on_click, dot_pill, TitlebarButton};
+use crate::actions::{
+    OpenCollectionPicker, OpenEnvironmentPicker, OpenHistory, OpenSettings, ToggleCommandPalette,
+    ToggleQuickOpen,
+};
+use crate::components::kit::{
+    dispatch_on_click, dot_pill, icon, IconChipButton, IconName, SearchTrigger,
+};
 use crate::root::EpistolaGui;
 use crate::state::{ActiveFile, AppState, View};
 use crate::theme::Theme;
@@ -78,7 +83,28 @@ fn render_breadcrumb(state: &AppState, theme: Theme) -> impl IntoElement {
         } else {
             theme.text_muted
         };
-        parts.push(div().text_color(color).child(segment).into_any_element());
+        if i == 0 && state.view == View::Workspace {
+            parts.push(
+                div()
+                    .id("breadcrumb-collection")
+                    .flex()
+                    .items_center()
+                    .gap(px(3.))
+                    .pl(px(7.))
+                    .pr(px(5.))
+                    .py(px(2.))
+                    .rounded(px(5.))
+                    .bg(theme.surface_raised)
+                    .cursor_pointer()
+                    .hover(|el| el.bg(theme.surface))
+                    .on_click(dispatch_on_click(OpenCollectionPicker))
+                    .child(div().text_color(color).child(segment))
+                    .child(icon(IconName::ChevronDown, px(10.), theme.text_faint))
+                    .into_any_element(),
+            );
+        } else {
+            parts.push(div().text_color(color).child(segment).into_any_element());
+        }
     }
     div().flex().items_center().children(parts)
 }
@@ -97,6 +123,7 @@ pub fn render_titlebar(
             theme,
         ),
     };
+    let settings_active = state.view == View::Workspace && state.active_file == ActiveFile::Config;
 
     div()
         .flex()
@@ -112,24 +139,51 @@ pub fn render_titlebar(
         .text_color(theme.text_muted)
         .child(
             div()
-                .flex_none()
-                .font_family("monospace")
-                .font_weight(gpui::FontWeight::BOLD)
-                .text_size(px(14.))
-                .text_color(theme.accent)
-                .child("ϵ"),
+                .flex()
+                .flex_1()
+                .items_center()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .flex_none()
+                        .font_family("monospace")
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_size(px(14.))
+                        .text_color(theme.accent)
+                        .child("ϵ"),
+                )
+                .child(render_breadcrumb(state, theme)),
         )
-        .child(render_breadcrumb(state, theme))
-        .child(div().flex_1())
+        .child(
+            SearchTrigger::new(IconName::Search, "Search requests…", "⌘P")
+                .on_click(dispatch_on_click(ToggleQuickOpen)),
+        )
         .child(
             div()
-                .id("env-pill")
-                .cursor_pointer()
-                .on_click(dispatch_on_click(OpenEnvironmentPicker))
-                .child(env_pill),
-        )
-        .child(TitlebarButton::new("Quick Open", "⌘P").on_click(dispatch_on_click(ToggleQuickOpen)))
-        .child(
-            TitlebarButton::new("Commands", "⌘K").on_click(dispatch_on_click(ToggleCommandPalette)),
+                .flex()
+                .flex_1()
+                .items_center()
+                .justify_end()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .id("env-pill")
+                        .cursor_pointer()
+                        .on_click(dispatch_on_click(OpenEnvironmentPicker))
+                        .child(env_pill),
+                )
+                .child(
+                    IconChipButton::new(IconName::Zap, "⌘K", "Commands")
+                        .on_click(dispatch_on_click(ToggleCommandPalette)),
+                )
+                .child(
+                    IconChipButton::new(IconName::History, "⌘⇧H", "History")
+                        .on_click(dispatch_on_click(OpenHistory)),
+                )
+                .child(
+                    IconChipButton::new(IconName::Settings, "⌘,", "Settings")
+                        .active(settings_active)
+                        .on_click(dispatch_on_click(OpenSettings)),
+                ),
         )
 }

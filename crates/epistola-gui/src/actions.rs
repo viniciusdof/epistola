@@ -46,6 +46,7 @@ actions!(
         OpenCollection,
         NewCollection,
         OpenEnvironmentPicker,
+        OpenCollectionPicker,
         OpenHistory,
         NewRequest,
         RenameRequest,

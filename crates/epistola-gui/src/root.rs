@@ -12,18 +12,18 @@ use nucleo_matcher::{Config, Matcher};
 
 use crate::actions::{
     CloseTab, CycleEnvironment, DeleteRequest, Dismiss, DuplicateRequest, GoHome, GoWorkspace,
-    LintCollection, NewCollection, NewRequest, OpenCollection, OpenEnvironmentDoc,
-    OpenEnvironmentPicker, OpenFolderDoc, OpenHistory, OpenRecentCollection, OpenRequestFile,
-    OpenSettings, RenameRequest, RunActiveRequest, SelectEnvironment, SelectResponseSubtab,
-    ShowResolvedRequest, SwitchTab, ToggleCommandPalette, ToggleDrawer, ToggleFolderCollapse,
-    ToggleQuickOpen, ToggleSidebar,
+    LintCollection, NewCollection, NewRequest, OpenCollection, OpenCollectionPicker,
+    OpenEnvironmentDoc, OpenEnvironmentPicker, OpenFolderDoc, OpenHistory, OpenRecentCollection,
+    OpenRequestFile, OpenSettings, RenameRequest, RunActiveRequest, SelectEnvironment,
+    SelectResponseSubtab, ShowResolvedRequest, SwitchTab, ToggleCommandPalette, ToggleDrawer,
+    ToggleFolderCollapse, ToggleQuickOpen, ToggleSidebar,
 };
 use crate::components::editor_text::EditorTextLayout;
 use crate::components::history_modal;
 use crate::components::picker::{filter_items, render_picker, PickerItem};
 use crate::components::prompt_modal::render_prompt_modal;
 use crate::components::{
-    activity_rail, editor, home, response_drawer, sidebar, statusbar, titlebar,
+    editor, home, resize_handle, response_drawer, sidebar, statusbar, titlebar,
 };
 use crate::editor_save;
 use crate::execution;
@@ -31,9 +31,6 @@ use crate::state::{ActiveFile, ActivityResult, AppState, Overlay, PromptKind, Vi
 use crate::text_field::TextField;
 use crate::theme::Theme;
 
-/// Which panel a drag-in-progress is resizing. Window interaction, not
-/// domain state — lives here next to `editor_mouse_selecting`, not on
-/// `AppState`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResizingPanel {
     Sidebar,
@@ -143,6 +140,10 @@ impl EpistolaGui {
         );
     }
 
+    fn open_collection_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_text_overlay(Overlay::SwitchCollection, "Search collections…", window, cx);
+    }
+
     fn open_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.state.history_entries = self
             .state
@@ -161,6 +162,7 @@ impl EpistolaGui {
             Some(Overlay::CommandPalette) => command_palette_items(&self.state),
             Some(Overlay::QuickOpen) => quick_open_items(&self.state),
             Some(Overlay::EnvironmentPicker) => environment_picker_items(&self.state),
+            Some(Overlay::SwitchCollection) => switch_collection_items(&self.state),
             _ => Vec::new(),
         };
         let query = self.overlay_input.read(cx).text().to_string();
@@ -478,7 +480,8 @@ impl EpistolaGui {
         match self.state.overlay {
             Some(Overlay::CommandPalette)
             | Some(Overlay::QuickOpen)
-            | Some(Overlay::EnvironmentPicker) => self.overlay_items.len(),
+            | Some(Overlay::EnvironmentPicker)
+            | Some(Overlay::SwitchCollection) => self.overlay_items.len(),
             Some(Overlay::History) => self.state.history_entries.len(),
             Some(Overlay::Prompt(_)) | None => 0,
         }
@@ -504,7 +507,10 @@ impl EpistolaGui {
         };
         let selected = self.state.overlay_selected;
         match overlay {
-            Overlay::CommandPalette | Overlay::QuickOpen | Overlay::EnvironmentPicker => {
+            Overlay::CommandPalette
+            | Overlay::QuickOpen
+            | Overlay::EnvironmentPicker
+            | Overlay::SwitchCollection => {
                 if let Some(item) = self.overlay_items.get(selected) {
                     let action = item.action.boxed_clone();
                     if item.closes_overlay {
@@ -578,7 +584,7 @@ fn quick_open_items(state: &AppState) -> Vec<PickerItem> {
     let Ok(collection) = &state.collection else {
         return Vec::new();
     };
-    collection
+    let mut items: Vec<PickerItem> = collection
         .all_requests()
         .into_iter()
         .map(|request| {
@@ -589,7 +595,34 @@ fn quick_open_items(state: &AppState) -> Vec<PickerItem> {
             )
             .leading_method(request.method.clone())
         })
-        .collect()
+        .collect();
+    items.extend(collection.environments.iter().map(|name| {
+        PickerItem::new(
+            format!("environments/{name}.toml"),
+            OpenEnvironmentDoc { name: name.clone() },
+        )
+    }));
+    items
+}
+
+fn switch_collection_items(state: &AppState) -> Vec<PickerItem> {
+    let mut items: Vec<PickerItem> = state
+        .recent_collections
+        .iter()
+        .map(|path| {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            let is_current = path == &state.cwd;
+            PickerItem::new(name, OpenRecentCollection { path: path.clone() })
+                .leading_dot(is_current)
+                .detail(path.display().to_string())
+        })
+        .collect();
+    items.push(PickerItem::new("Open Folder…", OpenCollection));
+    items.push(PickerItem::new("New Collection…", NewCollection));
+    items
 }
 
 fn environment_picker_items(state: &AppState) -> Vec<PickerItem> {
@@ -626,10 +659,9 @@ impl Render for EpistolaGui {
                 let sidebar_width = if self.state.sidebar_collapsed {
                     px(0.)
                 } else {
-                    self.state.sidebar_width
+                    self.state.sidebar_width + resize_handle::HANDLE_SIZE
                 };
-                let editor_max_width =
-                    window.viewport_size().width - sidebar_width - activity_rail::RAIL_WIDTH;
+                let editor_max_width = window.viewport_size().width - sidebar_width;
                 let editor_max_width = if editor_max_width < px(0.) {
                     px(0.)
                 } else {
@@ -695,6 +727,9 @@ impl Render for EpistolaGui {
             }))
             .on_action(cx.listener(|this, _: &OpenEnvironmentPicker, window, cx| {
                 this.open_environment_picker(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &OpenCollectionPicker, window, cx| {
+                this.open_collection_picker(window, cx)
             }))
             .on_action(
                 cx.listener(|this, _: &OpenHistory, window, cx| this.open_history(window, cx)),
@@ -762,7 +797,6 @@ impl Render for EpistolaGui {
                     .flex()
                     .flex_1()
                     .min_h(px(0.))
-                    .child(activity_rail::render_activity_rail(&self.state, cx))
                     .child(div().flex().flex_1().min_w(px(0.)).child(viewport)),
             )
             .when(show_drawer, |el| {
@@ -775,7 +809,10 @@ impl Render for EpistolaGui {
             })
             .child(statusbar::render_statusbar(&self.state, theme))
             .when_some(self.state.overlay.clone(), |el, overlay| match overlay {
-                Overlay::CommandPalette | Overlay::QuickOpen | Overlay::EnvironmentPicker => {
+                Overlay::CommandPalette
+                | Overlay::QuickOpen
+                | Overlay::EnvironmentPicker
+                | Overlay::SwitchCollection => {
                     let selected = self.state.overlay_selection(self.overlay_items.len());
                     el.child(render_picker(
                         &self.overlay_input,

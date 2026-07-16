@@ -1,4 +1,3 @@
-pub mod activity_rail;
 pub mod editor;
 pub mod editor_text;
 pub mod history_modal;

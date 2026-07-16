@@ -188,8 +188,6 @@ pub fn render_response_drawer(
         .flex()
         .flex_col()
         .flex_none()
-        .h(height)
-        .bg(theme.surface)
         .child(
             resize_handle("drawer-resize-handle", ResizeAxis::Vertical, theme).on_mouse_down(
                 gpui::MouseButton::Left,
@@ -199,56 +197,65 @@ pub fn render_response_drawer(
         .child(
             div()
                 .flex()
-                .items_center()
-                .gap(px(4.))
-                .px(px(12.))
-                .py(px(6.))
-                .border_b_1()
-                .border_color(theme.border)
-                .text_size(px(11.5))
-                .when(has_headers, |el| {
-                    el.child(drawer_subtab("Body", ResponseSubTab::Body, subtab, theme))
-                        .child(drawer_subtab(
-                            "Headers",
-                            ResponseSubTab::Headers,
-                            subtab,
-                            theme,
-                        ))
-                        .child(drawer_subtab("Raw", ResponseSubTab::Raw, subtab, theme))
-                })
-                .when(!has_headers, |el| {
-                    el.child(
-                        div()
-                            .px(px(10.))
-                            .py(px(4.))
-                            .rounded(px(5.))
-                            .bg(theme.surface_raised)
-                            .text_color(theme.text)
-                            .child("Response"),
-                    )
-                })
-                .child(status_chip(chip))
-                .when_some(meta, |el, meta| {
-                    el.child(
-                        div()
-                            .ml(px(8.))
-                            .font_family("monospace")
-                            .text_size(px(11.))
-                            .text_color(theme.text_faint)
-                            .child(meta),
-                    )
-                }),
-        )
-        .child(
-            div()
-                .id("response-body")
-                .flex_1()
-                .overflow_y_scroll()
-                .px(px(16.))
-                .py(px(10.))
-                .font_family("monospace")
-                .text_size(px(12.5))
-                .text_color(theme.text)
-                .child(body),
+                .flex_col()
+                .flex_none()
+                .h(height)
+                .overflow_hidden()
+                .bg(theme.surface)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .px(px(12.))
+                        .py(px(6.))
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .text_size(px(11.5))
+                        .when(has_headers, |el| {
+                            el.child(drawer_subtab("Body", ResponseSubTab::Body, subtab, theme))
+                                .child(drawer_subtab(
+                                    "Headers",
+                                    ResponseSubTab::Headers,
+                                    subtab,
+                                    theme,
+                                ))
+                                .child(drawer_subtab("Raw", ResponseSubTab::Raw, subtab, theme))
+                        })
+                        .when(!has_headers, |el| {
+                            el.child(
+                                div()
+                                    .px(px(10.))
+                                    .py(px(4.))
+                                    .rounded(px(5.))
+                                    .bg(theme.surface_raised)
+                                    .text_color(theme.text)
+                                    .child("Response"),
+                            )
+                        })
+                        .child(status_chip(chip))
+                        .when_some(meta, |el, meta| {
+                            el.child(
+                                div()
+                                    .ml(px(8.))
+                                    .font_family("monospace")
+                                    .text_size(px(11.))
+                                    .text_color(theme.text_faint)
+                                    .child(meta),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .id("response-body")
+                        .flex_1()
+                        .overflow_y_scroll()
+                        .px(px(16.))
+                        .py(px(10.))
+                        .font_family("monospace")
+                        .text_size(px(12.5))
+                        .text_color(theme.text)
+                        .child(body),
+                ),
         )
 }

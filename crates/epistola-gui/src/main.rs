@@ -22,9 +22,10 @@ use gpui::{
 
 use actions::{
     Backspace, Copy, Cut, CycleEnvironment, Delete, Dismiss, End, GoHome, Home, InsertNewline,
-    LintCollection, MoveDown, MoveLeft, MoveRight, MoveUp, OpenCollection, OpenSettings, Paste,
-    Redo, RunActiveRequest, Save, SelectAll, SelectDown, SelectLeft, SelectRight, SelectUp,
-    ShowResolvedRequest, ToggleCommandPalette, ToggleDrawer, ToggleQuickOpen, ToggleSidebar, Undo,
+    LintCollection, MoveDown, MoveLeft, MoveRight, MoveUp, OpenCollection, OpenHistory,
+    OpenSettings, Paste, Redo, RunActiveRequest, Save, SelectAll, SelectDown, SelectLeft,
+    SelectRight, SelectUp, ShowResolvedRequest, ToggleCommandPalette, ToggleDrawer,
+    ToggleQuickOpen, ToggleSidebar, Undo,
 };
 use assets::Assets;
 use root::EpistolaGui;
@@ -83,6 +84,7 @@ fn main() {
                 KeyBinding::new("cmd-e", CycleEnvironment, None),
                 KeyBinding::new("cmd-o", OpenCollection, None),
                 KeyBinding::new("cmd-\\", ToggleSidebar, None),
+                KeyBinding::new("cmd-shift-h", OpenHistory, None),
                 KeyBinding::new("cmd-j", ToggleDrawer, None),
                 KeyBinding::new("escape", Dismiss, None),
             ]);
