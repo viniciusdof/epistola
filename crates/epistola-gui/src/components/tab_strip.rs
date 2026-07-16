@@ -25,12 +25,7 @@ fn tab_glyph(state: &AppState, theme: Theme, file: &ActiveFile) -> gpui::AnyElem
             .rounded(px(3.))
             .bg(theme.success)
             .into_any_element(),
-        ActiveFile::Request(path) => match state
-            .collection
-            .as_ref()
-            .ok()
-            .and_then(|c| c.find_request(path))
-        {
+        ActiveFile::Request(path) => match state.collection().and_then(|c| c.find_request(path)) {
             Some(request) => MethodTag::new(request.method.clone()).into_any_element(),
             None => div().into_any_element(),
         },
@@ -46,12 +41,7 @@ fn tab_text(state: &AppState, file: &ActiveFile) -> SharedString {
             None => "folder.toml".into(),
         },
         ActiveFile::Environment(name) => format!("{name}.toml").into(),
-        ActiveFile::Request(path) => match state
-            .collection
-            .as_ref()
-            .ok()
-            .and_then(|c| c.find_request(path))
-        {
+        ActiveFile::Request(path) => match state.collection().and_then(|c| c.find_request(path)) {
             Some(request) => request.file_name.clone().into(),
             None => path.display().to_string().into(),
         },

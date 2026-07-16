@@ -18,6 +18,7 @@ use crate::actions::{
     SelectResponseSubtab, ShowResolvedRequest, SwitchTab, ToggleCommandPalette, ToggleDrawer,
     ToggleFolderCollapse, ToggleQuickOpen, ToggleSidebar,
 };
+use crate::collection;
 use crate::components::editor_text::EditorTextLayout;
 use crate::components::history_modal;
 use crate::components::picker::{filter_items, render_picker, PickerItem};
@@ -62,14 +63,9 @@ impl EpistolaGui {
         })
         .detach();
 
-        let state = AppState::new(cwd);
-        let fs_watcher = state
-            .collection
-            .as_ref()
-            .ok()
-            .and_then(|collection| watcher::spawn_watch(collection.root.clone(), cx));
+        let state = AppState::new(cwd.clone());
 
-        Self {
+        let this = Self {
             state,
             editor_focus_handle: cx.focus_handle(),
             overlay_focus_handle: cx.focus_handle(),
@@ -81,23 +77,23 @@ impl EpistolaGui {
             overlay_items: Vec::new(),
             overlay_matcher: Matcher::new(Config::DEFAULT),
             resizing: None,
-            _fs_watcher: fs_watcher,
-        }
+            _fs_watcher: None,
+        };
+        collection::spawn_load_collection(cwd, cx);
+        this
     }
 
-    /// Re-establishes the file watch for the current collection root — called
-    /// after `AppState::open_collection_at` points `state` at a new root.
-    fn respawn_watcher(&mut self, cx: &mut Context<Self>) {
+    /// Re-establishes the file watch once a collection load lands on `state`.
+    pub(crate) fn respawn_watcher(&mut self, cx: &mut Context<Self>) {
         self._fs_watcher = self
             .state
-            .collection
-            .as_ref()
-            .ok()
+            .collection()
             .and_then(|collection| watcher::spawn_watch(collection.root.clone(), cx));
     }
 
     pub(crate) fn handle_fs_events(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         self.state.handle_fs_events(&paths);
+        collection::spawn_refresh_collection(self.state.cwd.clone(), cx);
         cx.notify();
     }
 }
@@ -173,9 +169,7 @@ impl EpistolaGui {
     fn open_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.state.history_entries = self
             .state
-            .collection
-            .as_ref()
-            .ok()
+            .collection()
             .map(|collection| {
                 epistola_engine::history::read_entries(&collection.root).unwrap_or_default()
             })
@@ -244,7 +238,7 @@ impl EpistolaGui {
     }
 
     fn lint_collection(&mut self, cx: &mut Context<Self>) {
-        if self.state.collection.is_err() {
+        if self.state.collection().is_none() {
             return;
         }
         let tab = self.state.active_file.clone();
@@ -266,7 +260,7 @@ impl EpistolaGui {
     }
 
     fn cycle_environment_action(&mut self, cx: &mut Context<Self>) {
-        if self.state.collection.is_err() {
+        if self.state.collection().is_none() {
             return;
         }
         self.state.cycle_environment();
@@ -276,7 +270,7 @@ impl EpistolaGui {
     /// Relative to the collection root: the directory of the request or
     /// folder currently open, or the root itself if neither is open.
     fn default_new_request_dir(&self) -> String {
-        let Ok(collection) = self.state.collection.as_ref() else {
+        let Some(collection) = self.state.collection() else {
             return String::new();
         };
         let dir = match &self.state.active_file {
@@ -353,9 +347,7 @@ impl EpistolaGui {
     ) {
         let name = self
             .state
-            .collection
-            .as_ref()
-            .ok()
+            .collection()
             .and_then(|c| c.find_request(&path))
             .map(|r| r.display_name.clone())
             .unwrap_or_else(|| path.display().to_string());
@@ -371,7 +363,7 @@ impl EpistolaGui {
                 let _ = weak.update(cx, |this, cx| {
                     match epistola_engine::requests::delete_request(&path) {
                         Ok(()) => {
-                            this.state.refresh_collection();
+                            collection::spawn_refresh_collection(this.state.cwd.clone(), cx);
                             this.state.close_request_tab_if_open(&path);
                         }
                         Err(err) => {
@@ -405,7 +397,7 @@ impl EpistolaGui {
 
         match result {
             Ok(new_path) => {
-                self.state.refresh_collection();
+                collection::spawn_refresh_collection(self.state.cwd.clone(), cx);
                 match &kind {
                     PromptKind::New { .. } | PromptKind::Duplicate { .. } => {
                         self.state.open_request(new_path);
@@ -436,8 +428,8 @@ impl EpistolaGui {
         cx: &mut Context<Self>,
     ) {
         if !self.state.has_unsaved_changes() {
-            self.state.open_collection_at(path);
-            self.respawn_watcher(cx);
+            self.state.begin_open_collection(path.clone());
+            collection::spawn_load_collection(path, cx);
             cx.notify();
             return;
         }
@@ -451,8 +443,8 @@ impl EpistolaGui {
         cx.spawn(async move |weak, cx| {
             if let Ok(0) = answer.await {
                 let _ = weak.update(cx, |this, cx| {
-                    this.state.open_collection_at(path);
-                    this.respawn_watcher(cx);
+                    this.state.begin_open_collection(path.clone());
+                    collection::spawn_load_collection(path, cx);
                     cx.notify();
                 });
             }
@@ -597,7 +589,7 @@ fn command_palette_items(state: &AppState) -> Vec<PickerItem> {
         items.push(PickerItem::new("Delete Request", DeleteRequest).keep_overlay_open());
     }
 
-    if state.collection.is_ok() {
+    if state.collection().is_some() {
         items.push(PickerItem::new("New Request", NewRequest).keep_overlay_open());
         items.push(PickerItem::new("Lint collection", LintCollection).detail("⌘⇧L"));
         items.push(PickerItem::new("Switch environment", CycleEnvironment).detail("⌘E"));
@@ -609,7 +601,7 @@ fn command_palette_items(state: &AppState) -> Vec<PickerItem> {
 }
 
 fn quick_open_items(state: &AppState) -> Vec<PickerItem> {
-    let Ok(collection) = &state.collection else {
+    let Some(collection) = state.collection() else {
         return Vec::new();
     };
     let mut items: Vec<PickerItem> = collection
@@ -654,7 +646,7 @@ fn switch_collection_items(state: &AppState) -> Vec<PickerItem> {
 }
 
 fn environment_picker_items(state: &AppState) -> Vec<PickerItem> {
-    let Ok(collection) = &state.collection else {
+    let Some(collection) = state.collection() else {
         return Vec::new();
     };
     collection

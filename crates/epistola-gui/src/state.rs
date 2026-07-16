@@ -7,7 +7,7 @@ use epistola_format::{FolderManifest, RequestFile};
 use gpui::Pixels;
 
 use crate::buffer::EditorBuffer;
-use crate::collection::{self, CollectionTree, RequestEntry};
+use crate::collection::{CollectionTree, RequestEntry};
 use crate::components::response_drawer;
 use crate::components::sidebar::{self, SidebarRow};
 use crate::execution;
@@ -99,7 +99,8 @@ pub struct AppState {
     pub active_file: ActiveFile,
     pub open_tabs: Vec<ActiveFile>,
     pub environment: Option<String>,
-    pub collection: Result<CollectionTree, String>,
+
+    pub collection: Option<Result<CollectionTree, String>>,
     pub overlay: Option<Overlay>,
 
     pub activity: HashMap<ActiveFile, ActivityResult>,
@@ -125,11 +126,11 @@ impl AppState {
     pub fn new(cwd: PathBuf) -> Self {
         let mut state = Self {
             cwd: PathBuf::new(),
-            view: View::Workspace,
+            view: View::Home,
             active_file: ActiveFile::None,
             open_tabs: Vec::new(),
             environment: None,
-            collection: Err(String::new()),
+            collection: None,
             overlay: None,
             activity: HashMap::new(),
             response_subtab: ResponseSubTab::default(),
@@ -147,20 +148,44 @@ impl AppState {
             overlay_selected: 0,
             overlay_error: None,
         };
-        state.open_collection_at(cwd);
-        if state.collection.is_err() {
-            state.view = View::Home;
-        }
+        state.begin_open_collection(cwd);
         state
     }
 
-    pub fn open_collection_at(&mut self, cwd: PathBuf) {
-        let collection = collection::load(&cwd).map_err(|err| err.to_string());
-        self.environment = collection
+    /// Clears the previous collection's UI state and marks `collection` as
+    /// loading until `apply_opened_collection` delivers the result.
+    pub fn begin_open_collection(&mut self, cwd: PathBuf) {
+        self.cwd = cwd;
+        self.collection = None;
+        self.environment = None;
+        self.active_file = ActiveFile::None;
+        self.open_tabs = Vec::new();
+        self.collapsed_folders.clear();
+        self.view = View::Home;
+        self.close_overlay();
+        self.activity.clear();
+        self.response_subtab = ResponseSubTab::default();
+        self.collection_action_error = None;
+        self.recent_collections = epistola_engine::recent::list().unwrap_or_default();
+        self.editor_buffers.clear();
+        self.url_previews.clear();
+        self.refresh_sidebar_rows();
+    }
+
+    /// Ignored if `cwd` no longer matches `self.cwd` (user switched again mid-load).
+    pub fn apply_opened_collection(
+        &mut self,
+        cwd: PathBuf,
+        result: Result<CollectionTree, String>,
+    ) {
+        if cwd != self.cwd {
+            return;
+        }
+        self.environment = result
             .as_ref()
             .ok()
             .and_then(|c| c.default_environment.clone());
-        self.active_file = collection
+        self.active_file = result
             .as_ref()
             .ok()
             .and_then(|c| c.all_requests().into_iter().next())
@@ -170,26 +195,33 @@ impl AppState {
             ActiveFile::None => Vec::new(),
             file => vec![file.clone()],
         };
-        if collection.is_ok() {
+        self.view = if result.is_ok() {
             let _ = epistola_engine::recent::record(&cwd);
-        }
-        self.cwd = cwd;
-        self.collection = collection;
-        self.collapsed_folders.clear();
+            View::Workspace
+        } else {
+            View::Home
+        };
+        self.collection = Some(result);
         self.refresh_sidebar_rows();
-        self.view = View::Workspace;
-        self.close_overlay();
-        self.activity.clear();
-        self.response_subtab = ResponseSubTab::default();
-        self.collection_action_error = None;
-        self.recent_collections = epistola_engine::recent::list().unwrap_or_default();
-        self.editor_buffers.clear();
-        self.url_previews.clear();
         let active = self.active_file.clone();
         self.ensure_buffer(&active);
         if let ActiveFile::Request(path) = &active {
             self.refresh_url_preview(path);
         }
+    }
+
+    /// `None` both while loading and after a load failure.
+    pub fn collection(&self) -> Option<&CollectionTree> {
+        self.collection.as_ref()?.as_ref().ok()
+    }
+
+    /// Distinct from `None`, which also covers "still loading".
+    pub fn collection_error(&self) -> Option<&str> {
+        self.collection.as_ref()?.as_ref().err().map(String::as_str)
+    }
+
+    pub fn is_collection_loading(&self) -> bool {
+        self.collection.is_none()
     }
 
     fn ensure_buffer(&mut self, file: &ActiveFile) {
@@ -210,7 +242,7 @@ impl AppState {
                 EditorBuffer::read_only(text)
             }
             _ => {
-                let Some(path) = file.disk_path(self.collection.as_ref().ok()) else {
+                let Some(path) = file.disk_path(self.collection()) else {
                     return;
                 };
                 match std::fs::read_to_string(&path) {
@@ -225,7 +257,7 @@ impl AppState {
     pub fn refresh_url_preview(&mut self, path: &Path) {
         let raw = std::fs::read_to_string(path).ok();
         let virtual_note = raw.as_deref().and_then(|raw| {
-            let collection = self.collection.as_ref().ok()?;
+            let collection = self.collection()?;
             let rel_dir = path.strip_prefix(&collection.root).ok()?.parent()?;
             let file = RequestFile::from_toml_str(raw).ok()?;
             if file.request.auth.is_some() {
@@ -327,11 +359,7 @@ impl AppState {
 
     pub fn active_request(&self) -> Option<&RequestEntry> {
         match &self.active_file {
-            ActiveFile::Request(path) => self
-                .collection
-                .as_ref()
-                .ok()
-                .and_then(|c| c.find_request(path)),
+            ActiveFile::Request(path) => self.collection().and_then(|c| c.find_request(path)),
             _ => None,
         }
     }
@@ -360,9 +388,9 @@ impl AppState {
             .is_some_and(EditorBuffer::is_dirty)
     }
 
-    /// A no-op if the collection failed to load or defines no environments.
+    /// A no-op if the collection isn't loaded or defines no environments.
     pub fn cycle_environment(&mut self) {
-        let Ok(collection) = self.collection.as_ref() else {
+        let Some(collection) = self.collection() else {
             return;
         };
         if collection.environments.is_empty() {
@@ -406,16 +434,17 @@ impl AppState {
         self.history_entries.clear();
     }
 
-    /// Reloads the sidebar's `CollectionTree` after a request CRUD operation,
-    /// without touching open tabs/buffers/active file the way
-    /// `open_collection_at` does.
-    pub fn refresh_collection(&mut self) {
-        self.collection = collection::load(&self.cwd).map_err(|err| err.to_string());
+    pub fn apply_refreshed_collection(&mut self, result: Result<CollectionTree, String>) {
+        self.collection = Some(result);
         self.refresh_sidebar_rows();
     }
 
     fn refresh_sidebar_rows(&mut self) {
-        self.sidebar_rows = sidebar::flatten(&self.collection, &self.collapsed_folders);
+        let Some(collection) = self.collection.as_ref() else {
+            self.sidebar_rows = Vec::new();
+            return;
+        };
+        self.sidebar_rows = sidebar::flatten(collection, &self.collapsed_folders);
     }
 
     pub fn toggle_folder_collapse(&mut self, dir: PathBuf) {
@@ -456,14 +485,14 @@ impl AppState {
 
     /// Reacts to a debounced batch of externally-touched paths under the open collection.
     pub fn handle_fs_events(&mut self, paths: &[PathBuf]) {
-        if self.collection.is_err() {
+        if self.collection().is_none() {
             return;
         }
         let touched: HashSet<PathBuf> = paths.iter().cloned().collect();
 
         let files: Vec<ActiveFile> = self.editor_buffers.keys().cloned().collect();
         for file in files {
-            let Some(disk_path) = file.disk_path(self.collection.as_ref().ok()) else {
+            let Some(disk_path) = file.disk_path(self.collection()) else {
                 continue;
             };
             if !touched.contains(&disk_path) {
@@ -495,8 +524,6 @@ impl AppState {
                 self.refresh_url_preview(path);
             }
         }
-
-        self.refresh_collection();
     }
 }
 
@@ -537,7 +564,7 @@ mod tests {
             active_file: ActiveFile::None,
             open_tabs: Vec::new(),
             environment: None,
-            collection: Ok(CollectionTree {
+            collection: Some(Ok(CollectionTree {
                 root,
                 name: "test".to_string(),
                 folders: Vec::new(),
@@ -545,7 +572,7 @@ mod tests {
                 environments: Vec::new(),
                 default_environment: None,
                 index: Default::default(),
-            }),
+            })),
             overlay: None,
             activity: HashMap::new(),
             response_subtab: ResponseSubTab::default(),
@@ -639,5 +666,93 @@ mod tests {
         state.handle_fs_events(&[other]);
 
         assert_eq!(state.editor_buffers[&file].text, "buffer text");
+    }
+
+    fn empty_collection(root: PathBuf) -> CollectionTree {
+        CollectionTree {
+            root,
+            name: "test".to_string(),
+            folders: Vec::new(),
+            requests: Vec::new(),
+            environments: Vec::new(),
+            default_environment: None,
+            index: Default::default(),
+        }
+    }
+
+    #[test]
+    fn begin_open_collection_marks_loading_and_resets_ui_state() {
+        let dir = tempdir().unwrap();
+        let mut state = state_with_collection(dir.path().to_path_buf());
+        state.open_tabs.push(ActiveFile::Config);
+        state.active_file = ActiveFile::Config;
+
+        state.begin_open_collection(dir.path().to_path_buf());
+
+        assert!(state.collection.is_none());
+        assert!(state.is_collection_loading());
+        assert!(state.collection().is_none());
+        assert!(state.open_tabs.is_empty());
+        assert_eq!(state.view, View::Home);
+    }
+
+    #[test]
+    fn apply_opened_collection_ignores_a_stale_cwd() {
+        let dir = tempdir().unwrap();
+        let mut state = state_with_collection(dir.path().to_path_buf());
+        state.begin_open_collection(dir.path().to_path_buf());
+
+        let other_dir = tempdir().unwrap();
+        // The user switched again before the first load for `dir` came back.
+        state.begin_open_collection(other_dir.path().to_path_buf());
+        state.apply_opened_collection(
+            dir.path().to_path_buf(),
+            Ok(empty_collection(dir.path().to_path_buf())),
+        );
+
+        assert!(state.is_collection_loading());
+        assert_eq!(state.cwd, other_dir.path());
+    }
+
+    #[test]
+    fn apply_opened_collection_success_switches_to_workspace() {
+        let dir = tempdir().unwrap();
+        let mut state = state_with_collection(dir.path().to_path_buf());
+        state.begin_open_collection(dir.path().to_path_buf());
+
+        state.apply_opened_collection(
+            dir.path().to_path_buf(),
+            Ok(empty_collection(dir.path().to_path_buf())),
+        );
+
+        assert_eq!(state.view, View::Workspace);
+        assert!(state.collection().is_some());
+    }
+
+    #[test]
+    fn apply_opened_collection_failure_stays_on_home() {
+        let dir = tempdir().unwrap();
+        let mut state = state_with_collection(dir.path().to_path_buf());
+        state.begin_open_collection(dir.path().to_path_buf());
+
+        state.apply_opened_collection(dir.path().to_path_buf(), Err("boom".to_string()));
+
+        assert_eq!(state.view, View::Home);
+        assert_eq!(state.collection_error(), Some("boom"));
+    }
+
+    #[test]
+    fn apply_refreshed_collection_leaves_tabs_and_active_file_untouched() {
+        let dir = tempdir().unwrap();
+        let mut state = state_with_collection(dir.path().to_path_buf());
+        let file = ActiveFile::Config;
+        state.open_tabs.push(file.clone());
+        state.active_file = file.clone();
+
+        state.apply_refreshed_collection(Ok(empty_collection(dir.path().to_path_buf())));
+
+        assert_eq!(state.open_tabs, vec![file.clone()]);
+        assert_eq!(state.active_file, file);
+        assert!(state.collection().is_some());
     }
 }

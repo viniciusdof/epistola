@@ -6,6 +6,9 @@ use epistola_engine::discovery::discover_collection;
 use epistola_engine::environments::list_environment_names;
 use epistola_engine::requests::list_requests;
 use epistola_engine::EngineError;
+use gpui::{Context, WeakEntity};
+
+use crate::root::EpistolaGui;
 
 #[derive(Clone, Debug)]
 pub struct RequestEntry {
@@ -124,4 +127,38 @@ pub fn load(cwd: &Path) -> Result<CollectionTree, EngineError> {
         default_environment: collection.manifest.default_environment.clone(),
         index,
     })
+}
+
+/// Loads `cwd` off the main thread and hands the result to
+/// `AppState::apply_opened_collection`, which drops it if `cwd` has changed since.
+pub fn spawn_load_collection(cwd: PathBuf, cx: &mut Context<EpistolaGui>) {
+    let load_cwd = cwd.clone();
+    cx.spawn(async move |weak: WeakEntity<EpistolaGui>, cx| {
+        let result = cx
+            .background_executor()
+            .spawn(async_compat::Compat::new(async move { load(&load_cwd) }))
+            .await
+            .map_err(|err| err.to_string());
+        let _ = weak.update(cx, |gui, cx| {
+            gui.state.apply_opened_collection(cwd, result);
+            gui.respawn_watcher(cx);
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
+pub fn spawn_refresh_collection(cwd: PathBuf, cx: &mut Context<EpistolaGui>) {
+    cx.spawn(async move |weak: WeakEntity<EpistolaGui>, cx| {
+        let result = cx
+            .background_executor()
+            .spawn(async_compat::Compat::new(async move { load(&cwd) }))
+            .await
+            .map_err(|err| err.to_string());
+        let _ = weak.update(cx, |gui, cx| {
+            gui.state.apply_refreshed_collection(result);
+            cx.notify();
+        });
+    })
+    .detach();
 }

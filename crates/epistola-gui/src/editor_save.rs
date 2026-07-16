@@ -31,7 +31,7 @@ pub fn validate_and_save(state: &mut AppState, file: &ActiveFile) {
         return;
     }
 
-    let Some(path) = file.disk_path(state.collection.as_ref().ok()) else {
+    let Some(path) = file.disk_path(state.collection()) else {
         return;
     };
 
@@ -72,7 +72,7 @@ mod tests {
             active_file: ActiveFile::None,
             open_tabs: Vec::new(),
             environment: None,
-            collection: Err(String::new()),
+            collection: None,
             overlay: None,
             activity: HashMap::new(),
             response_subtab: ResponseSubTab::default(),
@@ -163,7 +163,7 @@ mod tests {
         let file = ActiveFile::Environment("dev".to_string());
         let text = "[variables]\nbase_url = \"https://dev.test\"\n";
         let mut state = state_with_buffer(file.clone(), text);
-        state.collection = Ok(CollectionTree {
+        state.collection = Some(Ok(CollectionTree {
             root: dir.path().to_path_buf(),
             name: "test".to_string(),
             folders: Vec::new(),
@@ -171,7 +171,7 @@ mod tests {
             environments: vec!["dev".to_string()],
             default_environment: None,
             index: Default::default(),
-        });
+        }));
 
         validate_and_save(&mut state, &file);
 

@@ -104,7 +104,7 @@ pub fn render_home(
     cx: &mut Context<EpistolaGui>,
 ) -> impl IntoElement {
     let theme = *cx.global::<Theme>();
-    let current_root = state.collection.as_ref().ok().map(|c| c.root.clone());
+    let current_root = state.collection().map(|c| c.root.clone());
 
     let recent_list: gpui::AnyElement = if state.recent_collections.is_empty() {
         div()
@@ -165,7 +165,16 @@ pub fn render_home(
                                         .mb(px(12.))
                                         .child("RECENT COLLECTIONS"),
                                 )
-                                .when_some(state.collection.as_ref().err(), |el, message| {
+                                .when(state.is_collection_loading(), |el| {
+                                    el.child(
+                                        div()
+                                            .mb(px(10.))
+                                            .text_size(px(11.5))
+                                            .text_color(theme.text_faint)
+                                            .child("Loading collection…"),
+                                    )
+                                })
+                                .when_some(state.collection_error(), |el, message| {
                                     el.child(
                                         div()
                                             .mb(px(10.))

@@ -17,9 +17,9 @@ fn breadcrumb(state: &AppState) -> Vec<SharedString> {
     match state.view {
         View::Home => vec!["Home".into()],
         View::Workspace => match &state.active_file {
-            ActiveFile::None => match &state.collection {
-                Ok(collection) => vec![collection.name.clone().into()],
-                Err(_) => vec!["No collection".into()],
+            ActiveFile::None => match state.collection() {
+                Some(collection) => vec![collection.name.clone().into()],
+                None => vec!["No collection".into()],
             },
             ActiveFile::Config => vec!["user".into(), "config.toml".into()],
             ActiveFile::Folder(dir) => {
@@ -27,25 +27,25 @@ fn breadcrumb(state: &AppState) -> Vec<SharedString> {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                match &state.collection {
-                    Ok(collection) => vec![
+                match state.collection() {
+                    Some(collection) => vec![
                         collection.name.clone().into(),
                         name.into(),
                         "folder.toml".into(),
                     ],
-                    Err(_) => vec!["…".into()],
+                    None => vec!["…".into()],
                 }
             }
-            ActiveFile::Environment(name) => match &state.collection {
-                Ok(collection) => vec![
+            ActiveFile::Environment(name) => match state.collection() {
+                Some(collection) => vec![
                     collection.name.clone().into(),
                     "environments".into(),
                     format!("{name}.toml").into(),
                 ],
-                Err(_) => vec!["…".into()],
+                None => vec!["…".into()],
             },
-            ActiveFile::Request(_) => match (&state.collection, state.active_request()) {
-                (Ok(collection), Some(request)) => {
+            ActiveFile::Request(_) => match (state.collection(), state.active_request()) {
+                (Some(collection), Some(request)) => {
                     let mut segments = vec![collection.name.clone().into()];
                     segments.extend(
                         request
