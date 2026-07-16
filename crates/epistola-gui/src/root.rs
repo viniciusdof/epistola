@@ -30,6 +30,7 @@ use crate::execution;
 use crate::state::{ActiveFile, ActivityResult, AppState, Overlay, PromptKind, View};
 use crate::text_field::TextField;
 use crate::theme::Theme;
+use crate::watcher::{self, FsWatcher};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResizingPanel {
@@ -49,6 +50,7 @@ pub struct EpistolaGui {
     overlay_items: Vec<PickerItem>,
     overlay_matcher: Matcher,
     pub(crate) resizing: Option<ResizingPanel>,
+    _fs_watcher: Option<FsWatcher>,
 }
 
 impl EpistolaGui {
@@ -60,8 +62,15 @@ impl EpistolaGui {
         })
         .detach();
 
+        let state = AppState::new(cwd);
+        let fs_watcher = state
+            .collection
+            .as_ref()
+            .ok()
+            .and_then(|collection| watcher::spawn_watch(collection.root.clone(), cx));
+
         Self {
-            state: AppState::new(cwd),
+            state,
             editor_focus_handle: cx.focus_handle(),
             overlay_focus_handle: cx.focus_handle(),
             overlay_input,
@@ -72,7 +81,24 @@ impl EpistolaGui {
             overlay_items: Vec::new(),
             overlay_matcher: Matcher::new(Config::DEFAULT),
             resizing: None,
+            _fs_watcher: fs_watcher,
         }
+    }
+
+    /// Re-establishes the file watch for the current collection root — called
+    /// after `AppState::open_collection_at` points `state` at a new root.
+    fn respawn_watcher(&mut self, cx: &mut Context<Self>) {
+        self._fs_watcher = self
+            .state
+            .collection
+            .as_ref()
+            .ok()
+            .and_then(|collection| watcher::spawn_watch(collection.root.clone(), cx));
+    }
+
+    pub(crate) fn handle_fs_events(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        self.state.handle_fs_events(&paths);
+        cx.notify();
     }
 }
 
@@ -411,6 +437,7 @@ impl EpistolaGui {
     ) {
         if !self.state.has_unsaved_changes() {
             self.state.open_collection_at(path);
+            self.respawn_watcher(cx);
             cx.notify();
             return;
         }
@@ -425,6 +452,7 @@ impl EpistolaGui {
             if let Ok(0) = answer.await {
                 let _ = weak.update(cx, |this, cx| {
                     this.state.open_collection_at(path);
+                    this.respawn_watcher(cx);
                     cx.notify();
                 });
             }

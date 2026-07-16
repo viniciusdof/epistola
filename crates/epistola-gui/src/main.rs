@@ -12,6 +12,7 @@ mod root;
 mod state;
 mod text_field;
 mod theme;
+mod watcher;
 
 use std::env;
 

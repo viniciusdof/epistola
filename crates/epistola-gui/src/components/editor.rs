@@ -259,6 +259,19 @@ fn render_save_error(message: &str, theme: Theme) -> impl IntoElement {
         .child(format!("Not saved: {message}"))
 }
 
+fn render_external_change_banner(theme: Theme) -> impl IntoElement {
+    div()
+        .flex_none()
+        .px(px(16.))
+        .py(px(6.))
+        .border_b_1()
+        .border_color(theme.border)
+        .bg(theme.accent.opacity(0.12))
+        .text_size(px(11.5))
+        .text_color(theme.accent)
+        .child("Changed on disk — your unsaved edits are kept; save to overwrite.")
+}
+
 pub fn render_editor(
     state: &AppState,
     focus_handle: FocusHandle,
@@ -341,6 +354,7 @@ pub fn render_editor(
         .and_then(|path| state.url_previews.get(path))
         .and_then(|preview| preview.virtual_note.clone());
     let save_error = buffer.and_then(|buffer| buffer.save_error.clone());
+    let external_change = buffer.is_some_and(|buffer| buffer.external_change);
 
     div()
         .flex()
@@ -358,6 +372,9 @@ pub fn render_editor(
         })
         .when_some(save_error, |el, message| {
             el.child(render_save_error(&message, theme))
+        })
+        .when(external_change, |el| {
+            el.child(render_external_change_banner(theme))
         })
         .child(body)
 }

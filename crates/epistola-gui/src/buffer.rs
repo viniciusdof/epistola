@@ -27,6 +27,7 @@ pub struct EditorBuffer {
     pub selection_reversed: bool,
     pub marked_range: Option<Range<usize>>,
     pub save_error: Option<String>,
+    pub external_change: bool,
     pub read_only: bool,
     line_starts: Vec<usize>,
     pub desired_col: Option<usize>,
@@ -44,6 +45,7 @@ impl EditorBuffer {
             selection_reversed: false,
             marked_range: None,
             save_error: None,
+            external_change: false,
             read_only: false,
             line_starts: Vec::new(),
             desired_col: None,
@@ -69,6 +71,7 @@ impl EditorBuffer {
     pub fn mark_saved(&mut self) {
         self.original = self.text.clone();
         self.save_error = None;
+        self.external_change = false;
     }
 
     pub fn set_text(&mut self, text: String) {
@@ -79,6 +82,7 @@ impl EditorBuffer {
         self.selection_reversed = false;
         self.marked_range = None;
         self.save_error = None;
+        self.external_change = false;
         self.desired_col = None;
         self.composing_origin = None;
         self.undo_stack.clear();
@@ -339,6 +343,14 @@ mod tests {
         buffer.mark_saved();
         assert!(!buffer.is_dirty());
         assert!(buffer.save_error.is_none());
+    }
+
+    #[test]
+    fn mark_saved_clears_external_change() {
+        let mut buffer = EditorBuffer::new("hello".to_string());
+        buffer.external_change = true;
+        buffer.mark_saved();
+        assert!(!buffer.external_change);
     }
 
     #[test]
