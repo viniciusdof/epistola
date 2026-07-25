@@ -197,23 +197,4 @@ jobs:
           CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
           SHA: ${{ needs.check-for-changes.outputs.sha }}
           TAG_NAME: ${{ needs.check-for-changes.outputs.tag_name }}
-        run: |
-          api="https://codeberg.org/api/v1/repos/viniciusdof/epistola"
-
-          payload="$(jq -n --arg sha "$SHA" --arg tag "$TAG_NAME" '{
-            tag_name: $tag,
-            name: $tag,
-            body: ("Automated nightly build from commit " + $sha + ". Unstable — expect breakage and reverted features."),
-            prerelease: true,
-            target_commitish: $sha
-          }')"
-
-          release_id="$(curl -sf -X POST -H "Authorization: token $CODEBERG_TOKEN" -H "Content-Type: application/json" \
-            -d "$payload" "$api/releases" | jq -r '.id')"
-
-          for f in dist/*.exe dist/*.dmg dist/*.deb dist/*.AppImage dist/*.tar.gz; do
-            [ -e "$f" ] || continue
-            curl -sf -X POST -H "Authorization: token $CODEBERG_TOKEN" \
-              -F "attachment=@$f" \
-              "$api/releases/$release_id/assets?name=$(basename "$f")"
-          done
+        run: bash .github/scripts/publish-codeberg-release.sh
