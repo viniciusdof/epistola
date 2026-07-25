@@ -49,7 +49,8 @@ impl CollectionTree {
     }
 }
 
-fn insert_request(root: &mut FolderEntry, dir: &Path, entry: RequestEntry) {
+/// Walks/creates `FolderEntry` nodes down to `dir`, returning the leaf node.
+fn ensure_folder<'a>(root: &'a mut FolderEntry, dir: &Path) -> &'a mut FolderEntry {
     let mut current = root;
     let mut rel_accum = PathBuf::new();
     for component in dir.components() {
@@ -68,7 +69,11 @@ fn insert_request(root: &mut FolderEntry, dir: &Path, entry: RequestEntry) {
         };
         current = &mut current.folders[idx];
     }
-    current.requests.push(entry);
+    current
+}
+
+fn insert_request(root: &mut FolderEntry, dir: &Path, entry: RequestEntry) {
+    ensure_folder(root, dir).requests.push(entry);
 }
 
 fn mark_folder_toml_presence(collection_root: &Path, folder: &mut FolderEntry) {
@@ -111,6 +116,11 @@ pub fn load(cwd: &Path) -> Result<CollectionTree, EngineError> {
         };
         index.insert(entry.abs_path.clone(), entry.clone());
         insert_request(&mut root_folder, &dir, entry);
+    }
+    for abs_dir in epistola_engine::folder::find_folder_manifest_dirs(&collection.root)? {
+        if let Ok(rel_dir) = abs_dir.strip_prefix(&collection.root) {
+            ensure_folder(&mut root_folder, rel_dir);
+        }
     }
     mark_folder_toml_presence(&collection.root, &mut root_folder);
 
@@ -161,4 +171,28 @@ pub fn spawn_refresh_collection(cwd: PathBuf, cx: &mut Context<EpistolaGui>) {
         });
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use epistola_format::CollectionManifest;
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn load_renders_an_empty_folder_that_has_no_requests_yet() {
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        epistola_engine::folder::init_folder(dir.path(), "auth").unwrap();
+
+        let tree = load(dir.path()).unwrap();
+
+        assert_eq!(tree.folders.len(), 1);
+        assert_eq!(tree.folders[0].name, "auth");
+        assert!(tree.folders[0].has_folder_toml);
+        assert!(tree.folders[0].requests.is_empty());
+    }
 }

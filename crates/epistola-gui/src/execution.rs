@@ -2,9 +2,10 @@
 //! `epistola-engine`'s network calls need. GPUI owns `main`, so
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use epistola_core::InterpolationError;
-use epistola_engine::EngineError;
+use epistola_engine::{CookieJar, EngineError};
 use epistola_format::FormatError;
 use gpui::{Context, WeakEntity};
 
@@ -29,7 +30,12 @@ pub(crate) fn classify_engine_error(err: EngineError) -> ActivityResult {
     ActivityResult::RunFailed(err.to_string())
 }
 
-pub fn spawn_run(path: PathBuf, environment: Option<String>, cx: &mut Context<EpistolaGui>) {
+pub fn spawn_run(
+    path: PathBuf,
+    environment: Option<String>,
+    cookie_jar: Arc<CookieJar>,
+    cx: &mut Context<EpistolaGui>,
+) {
     let tab = ActiveFile::Request(path.clone());
     cx.spawn(async move |weak: WeakEntity<EpistolaGui>, cx| {
         let _ = weak.update(cx, |this, cx| {
@@ -53,6 +59,7 @@ pub fn spawn_run(path: PathBuf, environment: Option<String>, cx: &mut Context<Ep
                     &collection.root,
                     &epistola_engine::client::ClientOverrides::default(),
                     &collection.manifest.client,
+                    Some(cookie_jar),
                 )
                 .await
             }))

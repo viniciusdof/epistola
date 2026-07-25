@@ -54,6 +54,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
         &collection.root,
         &overrides,
         &collection.manifest.client,
+        None,
     )
     .await?;
     let status = outcome.response.status;

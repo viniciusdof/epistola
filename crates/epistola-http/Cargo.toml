@@ -11,7 +11,7 @@ repository.workspace = true
 [dependencies]
 epistola-core.workspace = true
 thiserror.workspace = true
-reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "http2", "query"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "http2", "query", "cookies"] }
 
 [dev-dependencies]
 tokio.workspace = true

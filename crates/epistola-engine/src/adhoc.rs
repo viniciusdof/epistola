@@ -99,7 +99,15 @@ pub async fn run_adhoc_request(
         .as_ref()
         .is_some_and(|c| history_enabled_for_adhoc(c, cwd));
 
-    execute_and_log(request, history_enabled, base_dir, overrides, &client_spec).await
+    execute_and_log(
+        request,
+        history_enabled,
+        base_dir,
+        overrides,
+        &client_spec,
+        None,
+    )
+    .await
 }
 
 /// Computes the path `--save NAME` would write to, erroring if it's outside

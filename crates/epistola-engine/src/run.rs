@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use epistola_core::{HttpExecutor, Request, Response};
 use epistola_format::{ClientSpec, LoadedCollection};
-use epistola_http::ReqwestExecutor;
+use epistola_http::{CookieJar, ReqwestExecutor};
 
 use crate::client::{resolve_client_config, ClientOverrides};
 use crate::discovery::discover_collection;
@@ -45,15 +46,17 @@ pub fn resolve_saved_request(
 }
 
 /// Sends `request` and, if `history_enabled`, appends it to the
-/// collection's history log.
+/// collection's history log. `cookie_jar` is `None` for one-shot callers.
 pub async fn execute_and_log(
     request: &Request,
     history_enabled: bool,
     collection_root: &Path,
     overrides: &ClientOverrides,
     client_spec: &ClientSpec,
+    cookie_jar: Option<Arc<CookieJar>>,
 ) -> Result<RunOutcome, EngineError> {
-    let client_config = resolve_client_config(overrides, client_spec, collection_root)?;
+    let mut client_config = resolve_client_config(overrides, client_spec, collection_root)?;
+    client_config.cookie_jar = cookie_jar;
     let executor = ReqwestExecutor::with_config(client_config)?;
     let response = executor.execute(request).await?;
 
@@ -75,7 +78,7 @@ mod tests {
 
     use epistola_format::CollectionManifest;
     use tempfile::tempdir;
-    use wiremock::matchers::method;
+    use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
@@ -107,6 +110,7 @@ mod tests {
             &collection.root,
             &ClientOverrides::default(),
             &collection.manifest.client,
+            None,
         )
         .await
         .unwrap()
@@ -237,5 +241,53 @@ mod tests {
 
         let outcome = run_saved(dir.path().join("a.req.toml")).await;
         assert!(outcome.history_warning.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_shared_cookie_jar_persists_across_two_execute_and_log_calls() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/set"))
+            .respond_with(ResponseTemplate::new(200).insert_header("Set-Cookie", "session=abc"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/echo"))
+            .and(header("cookie", "session=abc"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        CollectionManifest::create(&dir.path().join("epistola.toml"), "n", None).unwrap();
+        let request_for = |request_path: &str| {
+            epistola_core::Request::get(format!("{}{request_path}", server.uri()))
+        };
+
+        let jar = std::sync::Arc::new(epistola_http::CookieJar::default());
+
+        execute_and_log(
+            &request_for("/set"),
+            false,
+            dir.path(),
+            &ClientOverrides::default(),
+            &epistola_format::ClientSpec::default(),
+            Some(jar.clone()),
+        )
+        .await
+        .unwrap();
+
+        let outcome = execute_and_log(
+            &request_for("/echo"),
+            false,
+            dir.path(),
+            &ClientOverrides::default(),
+            &epistola_format::ClientSpec::default(),
+            Some(jar.clone()),
+        )
+        .await
+        .unwrap();
+
+        assert!(outcome.response.is_success());
     }
 }

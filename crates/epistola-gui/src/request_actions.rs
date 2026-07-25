@@ -18,7 +18,12 @@ impl EpistolaGui {
         let Some(path) = self.state.active_request().map(|r| r.abs_path.clone()) else {
             return;
         };
-        execution::spawn_run(path, self.state.environment.clone(), cx);
+        execution::spawn_run(
+            path,
+            self.state.environment.clone(),
+            self.state.cookie_jar.clone(),
+            cx,
+        );
     }
 
     pub(crate) fn show_resolved_request(&mut self, cx: &mut Context<Self>) {
@@ -77,6 +82,11 @@ impl EpistolaGui {
         cx.notify();
     }
 
+    pub(crate) fn clear_cookie_jar(&mut self, cx: &mut Context<Self>) {
+        self.state.cookie_jar = std::sync::Arc::new(epistola_engine::CookieJar::default());
+        cx.notify();
+    }
+
     /// Relative to the collection root: the directory of the request or
     /// folder currently open, or the root itself if neither is open.
     fn default_new_request_dir(&self) -> String {
@@ -101,6 +111,29 @@ impl EpistolaGui {
         self.open_text_overlay(
             Overlay::Prompt(PromptKind::New { dir }),
             "Request name…",
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn start_new_folder_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dir = self.default_new_request_dir();
+        self.open_text_overlay(
+            Overlay::Prompt(PromptKind::NewFolder { dir }),
+            "Folder name…",
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn start_new_environment_prompt(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_text_overlay(
+            Overlay::Prompt(PromptKind::NewEnvironment),
+            "Environment name…",
             window,
             cx,
         );
@@ -242,6 +275,19 @@ impl EpistolaGui {
             PromptKind::Duplicate { path } => {
                 epistola_engine::requests::duplicate_request(path, &name)
             }
+            PromptKind::NewFolder { dir } => {
+                let target = if dir.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{dir}/{name}")
+                };
+                epistola_engine::folder::init_folder(&self.state.cwd, &target)
+            }
+            PromptKind::NewEnvironment => {
+                epistola_engine::discovery::discover_collection(&self.state.cwd).and_then(
+                    |collection| epistola_engine::environments::new_environment(&collection, &name),
+                )
+            }
         };
 
         match result {
@@ -258,6 +304,18 @@ impl EpistolaGui {
                         self.editor_view
                             .update(cx, |ev, _| ev.rename_buffer(&old_file, new_file));
                         self.state.replace_request_tab(path, new_path);
+                        self.sync_editor_view(cx);
+                    }
+                    PromptKind::NewFolder { .. } => {
+                        let folder_dir = new_path
+                            .parent()
+                            .map(|p| p.to_path_buf())
+                            .unwrap_or(new_path);
+                        self.state.open_folder_doc(folder_dir);
+                        self.sync_editor_view(cx);
+                    }
+                    PromptKind::NewEnvironment => {
+                        self.state.open_environment_doc(name.clone());
                         self.sync_editor_view(cx);
                     }
                 }

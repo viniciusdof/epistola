@@ -21,6 +21,40 @@ pub fn init_folder(cwd: &Path, dir: &str) -> Result<PathBuf, EngineError> {
     Ok(path)
 }
 
+/// Recursively finds every directory under `root` containing a `folder.toml`,
+/// skipping hidden directories like [`crate::requests::find_request_files`].
+pub fn find_folder_manifest_dirs(root: &Path) -> Result<Vec<PathBuf>, EngineError> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        if dir.join("folder.toml").is_file() {
+            found.push(dir.clone());
+        }
+        let entries = std::fs::read_dir(&dir).map_err(|source| EngineError::Io {
+            path: dir.clone(),
+            source,
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|source| EngineError::Io {
+                path: dir.clone(),
+                source,
+            })?;
+            let path = entry.path();
+            if path.is_dir() {
+                let is_hidden = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with('.'));
+                if !is_hidden {
+                    stack.push(path);
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -63,5 +97,40 @@ mod tests {
     fn init_errors_outside_a_collection() {
         let dir = tempdir().unwrap();
         assert!(init_folder(dir.path(), "").is_err());
+    }
+
+    #[test]
+    fn find_folder_manifest_dirs_finds_the_root_and_nested_manifests() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("epistola.toml"), "name = \"n\"\n").unwrap();
+        init_folder(dir.path(), "").unwrap();
+        init_folder(dir.path(), "auth").unwrap();
+
+        let mut found = find_folder_manifest_dirs(dir.path()).unwrap();
+        found.sort();
+        let mut expected = vec![dir.path().to_path_buf(), dir.path().join("auth")];
+        expected.sort();
+        assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn find_folder_manifest_dirs_skips_hidden_directories() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("epistola.toml"), "name = \"n\"\n").unwrap();
+        let hidden = dir.path().join(".epistola");
+        std::fs::create_dir_all(&hidden).unwrap();
+        std::fs::write(hidden.join("folder.toml"), "").unwrap();
+
+        let found = find_folder_manifest_dirs(dir.path()).unwrap();
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn find_folder_manifest_dirs_is_empty_when_no_manifest_exists() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("epistola.toml"), "name = \"n\"\n").unwrap();
+
+        let found = find_folder_manifest_dirs(dir.path()).unwrap();
+        assert!(found.is_empty());
     }
 }

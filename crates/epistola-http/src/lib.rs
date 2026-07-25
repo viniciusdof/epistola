@@ -1,9 +1,12 @@
 //! reqwest-based `HttpExecutor` for epistola — a thin adapter between
 //! `epistola_core::Request` and `reqwest::Request`.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use epistola_core::{ExecutorError, Header, HttpExecutor, Request, Response};
+
+pub use reqwest::cookie::Jar as CookieJar;
 
 /// Failure building a `reqwest::Client` (invalid proxy URL, malformed PEM
 /// identity, ...). Distinct from `ExecutorError`, which covers failures
@@ -35,6 +38,9 @@ pub struct ClientConfig {
     /// reqwest's rustls backend, which only exposes `Identity::from_pem`
     /// (the native-tls-only separate-file constructors aren't available).
     pub client_identity_pem: Option<Vec<u8>>,
+    /// Cookies live in the jar's own shared storage, not the `Client` — reuse
+    /// the same `Arc` across calls to accumulate cookies.
+    pub cookie_jar: Option<Arc<CookieJar>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -82,6 +88,10 @@ impl ReqwestExecutor {
 
         if let Some(pem) = &config.client_identity_pem {
             builder = builder.identity(reqwest::Identity::from_pem(pem)?);
+        }
+
+        if let Some(jar) = &config.cookie_jar {
+            builder = builder.cookie_provider(jar.clone());
         }
 
         Ok(Self {
@@ -411,5 +421,45 @@ mod tests {
         });
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_shared_jar_carries_a_cookie_across_two_separately_built_executors() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/set"))
+            .respond_with(ResponseTemplate::new(200).insert_header("Set-Cookie", "session=abc"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/echo"))
+            .and(header("cookie", "session=abc"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let jar = std::sync::Arc::new(CookieJar::default());
+
+        let first = ReqwestExecutor::with_config(ClientConfig {
+            cookie_jar: Some(jar.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        first
+            .execute(&Request::get(format!("{}/set", server.uri())))
+            .await
+            .unwrap();
+
+        let second = ReqwestExecutor::with_config(ClientConfig {
+            cookie_jar: Some(jar.clone()),
+            ..Default::default()
+        })
+        .unwrap();
+        let response = second
+            .execute(&Request::get(format!("{}/echo", server.uri())))
+            .await
+            .unwrap();
+
+        assert!(response.is_success());
     }
 }

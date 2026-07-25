@@ -10,12 +10,12 @@ use gpui::{
 use nucleo_matcher::{Config, Matcher};
 
 use crate::actions::{
-    CloseTab, CycleEnvironment, DeleteRequest, Dismiss, DuplicateRequest, GoHome, GoWorkspace,
-    LintCollection, NewCollection, NewRequest, OpenCollection, OpenCollectionPicker,
-    OpenEnvironmentDoc, OpenEnvironmentPicker, OpenFolderDoc, OpenHistory, OpenRecentCollection,
-    OpenRequestFile, OpenSettings, RenameRequest, RunActiveRequest, SelectEnvironment,
-    SelectResponseSubtab, ShowResolvedRequest, SwitchTab, ToggleCommandPalette, ToggleDrawer,
-    ToggleFolderCollapse, ToggleQuickOpen, ToggleSidebar,
+    ClearCookies, CloseTab, CycleEnvironment, DeleteRequest, Dismiss, DuplicateRequest, GoHome,
+    GoWorkspace, LintCollection, NewCollection, NewEnvironment, NewFolder, NewRequest,
+    OpenCollection, OpenCollectionPicker, OpenEnvironmentDoc, OpenEnvironmentPicker, OpenFolderDoc,
+    OpenHistory, OpenRecentCollection, OpenRequestFile, OpenSettings, RenameRequest,
+    RunActiveRequest, SelectEnvironment, SelectResponseSubtab, ShowResolvedRequest, SwitchTab,
+    ToggleCommandPalette, ToggleDrawer, ToggleFolderCollapse, ToggleQuickOpen, ToggleSidebar,
 };
 use crate::collection;
 use crate::components::history_modal;
@@ -257,6 +257,13 @@ impl Render for EpistolaGui {
             .on_action(cx.listener(|this, _: &DeleteRequest, window, cx| {
                 this.start_delete_request_confirm(window, cx)
             }))
+            .on_action(cx.listener(|this, _: &NewFolder, window, cx| {
+                this.start_new_folder_prompt(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &NewEnvironment, window, cx| {
+                this.start_new_environment_prompt(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ClearCookies, _window, cx| this.clear_cookie_jar(cx)))
             .on_action(cx.listener(|this, action: &OpenRequestFile, _window, cx| {
                 this.state.open_request(action.path.clone());
                 this.sync_editor_view(cx);

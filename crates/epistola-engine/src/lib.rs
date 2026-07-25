@@ -19,4 +19,5 @@ pub mod requests;
 pub mod resolve;
 pub mod run;
 
+pub use epistola_http::CookieJar;
 pub use error::EngineError;

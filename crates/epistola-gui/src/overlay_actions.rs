@@ -1,9 +1,10 @@
 use gpui::{Context, Focusable, KeyDownEvent, ScrollStrategy, UniformListScrollHandle, Window};
 
 use crate::actions::{
-    CycleEnvironment, DeleteRequest, DuplicateRequest, LintCollection, NewCollection, NewRequest,
-    OpenCollection, OpenEnvironmentDoc, OpenRecentCollection, OpenRequestFile, OpenSettings,
-    RenameRequest, RunActiveRequest, SelectEnvironment, ShowResolvedRequest,
+    ClearCookies, CycleEnvironment, DeleteRequest, DuplicateRequest, LintCollection, NewCollection,
+    NewEnvironment, NewFolder, NewRequest, OpenCollection, OpenEnvironmentDoc,
+    OpenRecentCollection, OpenRequestFile, OpenSettings, RenameRequest, RunActiveRequest,
+    SelectEnvironment, ShowResolvedRequest,
 };
 use crate::components::picker::{filter_items, PickerItem};
 use crate::root::EpistolaGui;
@@ -192,8 +193,11 @@ fn command_palette_items(state: &AppState) -> Vec<PickerItem> {
 
     if state.collection().is_some() {
         items.push(PickerItem::new("New Request", NewRequest).keep_overlay_open());
+        items.push(PickerItem::new("New Folder", NewFolder).keep_overlay_open());
+        items.push(PickerItem::new("New Environment", NewEnvironment).keep_overlay_open());
         items.push(PickerItem::new("Lint collection", LintCollection).detail("⌘⇧L"));
         items.push(PickerItem::new("Switch environment", CycleEnvironment).detail("⌘E"));
+        items.push(PickerItem::new("Clear Cookies", ClearCookies));
     }
 
     items.push(PickerItem::new("Open settings", OpenSettings).detail("⌘,"));

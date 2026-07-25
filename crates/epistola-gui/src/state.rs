@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use epistola_core::Response;
 use epistola_engine::history::HistoryEntry;
+use epistola_engine::CookieJar;
 use epistola_format::{FolderManifest, RequestFile};
 use gpui::Pixels;
 
@@ -64,6 +66,8 @@ pub enum PromptKind {
     New { dir: String },
     Rename { path: PathBuf },
     Duplicate { path: PathBuf },
+    NewFolder { dir: String },
+    NewEnvironment,
 }
 
 impl PromptKind {
@@ -72,6 +76,8 @@ impl PromptKind {
             PromptKind::New { .. } => "New Request",
             PromptKind::Rename { .. } => "Rename Request",
             PromptKind::Duplicate { .. } => "Duplicate Request",
+            PromptKind::NewFolder { .. } => "New Folder",
+            PromptKind::NewEnvironment => "New Environment",
         }
     }
 
@@ -80,6 +86,8 @@ impl PromptKind {
             PromptKind::New { .. } => "Create",
             PromptKind::Rename { .. } => "Rename",
             PromptKind::Duplicate { .. } => "Duplicate",
+            PromptKind::NewFolder { .. } => "Create",
+            PromptKind::NewEnvironment => "Create",
         }
     }
 }
@@ -129,6 +137,7 @@ pub struct AppState {
     pub history_entries: Vec<HistoryEntry>,
     pub sidebar_rows: Vec<SidebarRow>,
     pub collapsed_folders: HashSet<PathBuf>,
+    pub cookie_jar: Arc<CookieJar>,
 
     pub sidebar_width: Pixels,
     pub sidebar_collapsed: bool,
@@ -157,6 +166,7 @@ impl AppState {
             history_entries: Vec::new(),
             sidebar_rows: Vec::new(),
             collapsed_folders: HashSet::new(),
+            cookie_jar: Arc::new(CookieJar::default()),
             sidebar_width: sidebar::SIDEBAR_WIDTH,
             sidebar_collapsed: false,
             drawer_height: response_drawer::DRAWER_HEIGHT,
@@ -184,6 +194,7 @@ impl AppState {
         self.collection_action_error = None;
         self.recent_collections = epistola_engine::recent::list().unwrap_or_default();
         self.url_previews.clear();
+        self.cookie_jar = Arc::new(CookieJar::default());
         self.refresh_sidebar_rows();
     }
 
@@ -525,6 +536,7 @@ mod tests {
             history_entries: Vec::new(),
             sidebar_rows: Vec::new(),
             collapsed_folders: HashSet::new(),
+            cookie_jar: Arc::new(CookieJar::default()),
             sidebar_width: sidebar::SIDEBAR_WIDTH,
             sidebar_collapsed: false,
             drawer_height: response_drawer::DRAWER_HEIGHT,

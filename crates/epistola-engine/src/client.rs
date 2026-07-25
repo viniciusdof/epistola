@@ -57,6 +57,7 @@ pub fn resolve_client_config(
         proxy,
         insecure: overrides.insecure || collection.insecure,
         client_identity_pem,
+        cookie_jar: None,
     })
 }
 
