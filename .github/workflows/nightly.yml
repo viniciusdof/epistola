@@ -44,9 +44,6 @@ jobs:
           - os: ubuntu-24.04-arm
             platform: linux
             arch: aarch64
-          - os: macos-13
-            platform: macos
-            arch: x86_64
           - os: macos-latest
             platform: macos
             arch: aarch64
@@ -129,6 +126,8 @@ jobs:
           </dict>
           </plist>
           PLIST
+          codesign --force --deep --sign - stage/Epistola.app
+          codesign --force --sign - stage/epistola
           tar -czf "dist/epistola-nightly-macos-${{ matrix.arch }}.tar.gz" -C stage .
 
       - name: Package (Windows)
