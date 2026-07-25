@@ -27,6 +27,7 @@ jobs:
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
       sha: ${{ steps.check.outputs.sha }}
+      tag_name: ${{ steps.check.outputs.tag_name }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -35,13 +36,15 @@ jobs:
       - id: check
         run: |
           head_sha="$(git rev-parse HEAD)"
-          nightly_sha="$(git rev-parse refs/tags/nightly 2>/dev/null || true)"
           echo "sha=$head_sha" >> "$GITHUB_OUTPUT"
-          if [ "$head_sha" = "$nightly_sha" ]; then
-            echo "No commits on main since the last nightly ($head_sha); skipping build."
+
+          existing="$(git tag --points-at HEAD --list 'nightly-*')"
+          if [ -n "$existing" ]; then
+            echo "$head_sha already has a nightly tag ($existing); skipping build."
             echo "should_run=false" >> "$GITHUB_OUTPUT"
           else
             echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "tag_name=nightly-$(date -u +%Y-%m-%d)-${head_sha:0:7}" >> "$GITHUB_OUTPUT"
           fi
 
   build:
@@ -155,21 +158,20 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Move the nightly tag to the built commit
+      - name: Create the nightly tag
         run: |
-          git tag -f nightly "${{ needs.check-for-changes.outputs.sha }}"
-          git push origin nightly --force
+          git tag "${{ needs.check-for-changes.outputs.tag_name }}" "${{ needs.check-for-changes.outputs.sha }}"
+          git push origin "${{ needs.check-for-changes.outputs.tag_name }}"
 
       - uses: softprops/action-gh-release@v3
         with:
-          tag_name: nightly
-          name: Nightly
+          tag_name: ${{ needs.check-for-changes.outputs.tag_name }}
+          name: ${{ needs.check-for-changes.outputs.tag_name }}
           prerelease: true
+          draft: true
           target_commitish: ${{ needs.check-for-changes.outputs.sha }}
           body: |
-            Automated nightly build from commit ${{ needs.check-for-changes.outputs.sha }}.
-
-            This release is overwritten on every build and always tracks the tip of `main`. It is unstable — expect breakage and reverted features.
+            Automated nightly build from commit ${{ needs.check-for-changes.outputs.sha }}. Unstable — expect breakage and reverted features.
           files: |
             dist/*.exe
             dist/*.dmg
@@ -177,30 +179,31 @@ jobs:
             dist/*.AppImage
             dist/*.tar.gz
 
+      - name: Publish the nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${{ needs.check-for-changes.outputs.tag_name }}" --draft=false --repo ${{ github.repository }}
+
       - name: Push the nightly tag to Codeberg
         env:
           CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
         run: |
           echo "::add-mask::$CODEBERG_TOKEN"
           git remote add codeberg "https://oauth2:${CODEBERG_TOKEN}@codeberg.org/viniciusdof/epistola.git"
-          git push codeberg nightly --force
+          git push codeberg "${{ needs.check-for-changes.outputs.tag_name }}"
 
       - name: Publish nightly release on Codeberg
         env:
           CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
           SHA: ${{ needs.check-for-changes.outputs.sha }}
+          TAG_NAME: ${{ needs.check-for-changes.outputs.tag_name }}
         run: |
           api="https://codeberg.org/api/v1/repos/viniciusdof/epistola"
 
-          existing_id="$(curl -s -H "Authorization: token $CODEBERG_TOKEN" "$api/releases/tags/nightly" | jq -r '.id // empty')"
-          if [ -n "$existing_id" ]; then
-            curl -sf -X DELETE -H "Authorization: token $CODEBERG_TOKEN" "$api/releases/$existing_id"
-          fi
-
-          payload="$(jq -n --arg sha "$SHA" '{
-            tag_name: "nightly",
-            name: "Nightly",
-            body: ("Automated nightly build from commit " + $sha + ".\n\nThis release is overwritten on every build and always tracks the tip of `main`. It is unstable — expect breakage and reverted features."),
+          payload="$(jq -n --arg sha "$SHA" --arg tag "$TAG_NAME" '{
+            tag_name: $tag,
+            name: $tag,
+            body: ("Automated nightly build from commit " + $sha + ". Unstable — expect breakage and reverted features."),
             prerelease: true,
             target_commitish: $sha
           }')"
