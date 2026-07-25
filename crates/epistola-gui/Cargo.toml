@@ -9,7 +9,8 @@ publish.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "epistola-gui"
+
+name = "epistola_gui"
 path = "src/main.rs"
 
 [dependencies]
