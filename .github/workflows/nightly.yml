@@ -8,9 +8,22 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
 jobs:
   check-for-changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
       sha: ${{ steps.check.outputs.sha }}
@@ -54,6 +67,7 @@ jobs:
             platform: windows
             arch: aarch64
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
@@ -67,7 +81,8 @@ jobs:
             build-essential clang cmake lld llvm \
             libasound2-dev libfontconfig-dev libglib2.0-dev \
             libssl-dev libva-dev libvulkan1 libwayland-dev \
-            libx11-xcb-dev libxkbcommon-x11-dev
+            libx11-xcb-dev libxkbcommon-x11-dev \
+            squashfs-tools
 
       - uses: jdx/mise-action@v4
         if: matrix.platform != 'windows'
@@ -93,59 +108,56 @@ jobs:
         if: matrix.platform == 'windows'
         run: cargo build --release -p epistola-cli -p epistola-gui
 
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle
+
       - name: Package (Linux)
         if: matrix.platform == 'linux'
         run: |
+          cargo bundle --release -p epistola-gui -f deb
+          cargo bundle --release -p epistola-gui -f appimage
+
           mkdir -p dist
-          tar -czf "dist/epistola-nightly-linux-${{ matrix.arch }}.tar.gz" \
-            -C target/release epistola epistola-gui
+          cp target/release/bundle/deb/*.deb dist/
+          cp target/release/bundle/appimage/*.AppImage dist/
+          tar -czf "dist/epistola-nightly-cli-linux-${{ matrix.arch }}.tar.gz" \
+            -C target/release epistola
 
       - name: Package (macOS)
         if: matrix.platform == 'macos'
         run: |
-          mkdir -p stage/Epistola.app/Contents/MacOS dist
-          cp target/release/epistola-gui stage/Epistola.app/Contents/MacOS/
-          cp target/release/epistola stage/epistola
-          cat > stage/Epistola.app/Contents/Info.plist <<'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>CFBundleExecutable</key>
-            <string>epistola-gui</string>
-            <key>CFBundleIdentifier</key>
-            <string>dev.epistola.gui</string>
-            <key>CFBundleName</key>
-            <string>Epistola</string>
-            <key>CFBundlePackageType</key>
-            <string>APPL</string>
-            <key>LSMinimumSystemVersion</key>
-            <string>11.0</string>
-            <key>NSHighResolutionCapable</key>
-            <true/>
-          </dict>
-          </plist>
-          PLIST
-          codesign --force --deep --sign - stage/Epistola.app
-          codesign --force --sign - stage/epistola
-          tar -czf "dist/epistola-nightly-macos-${{ matrix.arch }}.tar.gz" -C stage .
+          cargo bundle --release -p epistola-gui -f osx
+          codesign --force --deep --sign - target/release/bundle/osx/Epistola.app
+
+          mkdir -p stage dist
+          cp -R target/release/bundle/osx/Epistola.app stage/
+          ln -s /Applications stage/Applications
+          hdiutil create -volname Epistola -srcfolder stage -ov -format UDZO \
+            "dist/epistola-nightly-macos-${{ matrix.arch }}.dmg"
+
+          codesign --force --sign - target/release/epistola
+          tar -czf "dist/epistola-nightly-cli-macos-${{ matrix.arch }}.tar.gz" \
+            -C target/release epistola
 
       - name: Package (Windows)
         if: matrix.platform == 'windows'
-        shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Compress-Archive -Path target/release/epistola.exe, target/release/epistola-gui.exe `
-            -DestinationPath "dist/epistola-nightly-windows-${{ matrix.arch }}.zip"
+          cargo bundle --release -p epistola-gui -f msi
+
+          mkdir -p dist
+          cp target/release/bundle/msi/*.msi dist/
+          cp target/release/epistola.exe "dist/epistola-nightly-cli-windows-${{ matrix.arch }}.exe"
 
       - uses: actions/upload-artifact@v7
         with:
           name: epistola-nightly-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/*
+          if-no-files-found: error
 
   release:
     needs: [check-for-changes, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -173,7 +185,11 @@ jobs:
             This release is overwritten on every build and always tracks the tip of `main`. It is unstable — expect breakage and reverted features.
           files: |
             dist/*.tar.gz
-            dist/*.zip
+            dist/*.exe
+            dist/*.dmg
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.msi
 
       - name: Push the nightly tag to Codeberg
         env:
@@ -206,7 +222,7 @@ jobs:
           release_id="$(curl -sf -X POST -H "Authorization: token $CODEBERG_TOKEN" -H "Content-Type: application/json" \
             -d "$payload" "$api/releases" | jq -r '.id')"
 
-          for f in dist/*.tar.gz dist/*.zip; do
+          for f in dist/*.tar.gz dist/*.exe dist/*.dmg dist/*.deb dist/*.AppImage dist/*.msi; do
             [ -e "$f" ] || continue
             curl -sf -X POST -H "Authorization: token $CODEBERG_TOKEN" \
               -F "attachment=@$f" \
