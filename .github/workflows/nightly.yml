@@ -1,0 +1,215 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check-for-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+      sha: ${{ steps.check.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - id: check
+        run: |
+          head_sha="$(git rev-parse HEAD)"
+          nightly_sha="$(git rev-parse refs/tags/nightly 2>/dev/null || true)"
+          echo "sha=$head_sha" >> "$GITHUB_OUTPUT"
+          if [ "$head_sha" = "$nightly_sha" ]; then
+            echo "No commits on main since the last nightly ($head_sha); skipping build."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check-for-changes
+    if: needs.check-for-changes.outputs.should_run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            platform: linux
+            arch: aarch64
+          - os: macos-13
+            platform: macos
+            arch: x86_64
+          - os: macos-latest
+            platform: macos
+            arch: aarch64
+          - os: windows-latest
+            platform: windows
+            arch: x86_64
+          - os: windows-11-arm
+            platform: windows
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check-for-changes.outputs.sha }}
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang cmake lld llvm \
+            libasound2-dev libfontconfig-dev libglib2.0-dev \
+            libssl-dev libva-dev libvulkan1 libwayland-dev \
+            libx11-xcb-dev libxkbcommon-x11-dev
+
+      - uses: jdx/mise-action@v4
+        if: matrix.platform != 'windows'
+        with:
+          install: false
+      - if: matrix.platform != 'windows'
+        run: mise install rust just
+
+      - uses: dtolnay/rust-toolchain@master
+        if: matrix.platform == 'windows'
+        with:
+          toolchain: "1.97.0"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.platform }}-${{ matrix.arch }}
+
+      - name: Build release binaries (Linux/macOS)
+        if: matrix.platform != 'windows'
+        run: just build-release
+
+      - name: Build release binaries (Windows)
+        if: matrix.platform == 'windows'
+        run: cargo build --release -p epistola-cli -p epistola-gui
+
+      - name: Package (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          mkdir -p dist
+          tar -czf "dist/epistola-nightly-linux-${{ matrix.arch }}.tar.gz" \
+            -C target/release epistola epistola-gui
+
+      - name: Package (macOS)
+        if: matrix.platform == 'macos'
+        run: |
+          mkdir -p stage/Epistola.app/Contents/MacOS dist
+          cp target/release/epistola-gui stage/Epistola.app/Contents/MacOS/
+          cp target/release/epistola stage/epistola
+          cat > stage/Epistola.app/Contents/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>epistola-gui</string>
+            <key>CFBundleIdentifier</key>
+            <string>dev.epistola.gui</string>
+            <key>CFBundleName</key>
+            <string>Epistola</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>11.0</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+          tar -czf "dist/epistola-nightly-macos-${{ matrix.arch }}.tar.gz" -C stage .
+
+      - name: Package (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path target/release/epistola.exe, target/release/epistola-gui.exe `
+            -DestinationPath "dist/epistola-nightly-windows-${{ matrix.arch }}.zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: epistola-nightly-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*
+
+  release:
+    needs: [check-for-changes, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.check-for-changes.outputs.sha }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Move the nightly tag to the built commit
+        run: |
+          git tag -f nightly "${{ needs.check-for-changes.outputs.sha }}"
+          git push origin nightly --force
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: nightly
+          name: Nightly
+          prerelease: true
+          target_commitish: ${{ needs.check-for-changes.outputs.sha }}
+          body: |
+            Automated nightly build from commit ${{ needs.check-for-changes.outputs.sha }}.
+
+            This release is overwritten on every build and always tracks the tip of `main`. It is unstable — expect breakage and reverted features.
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+
+      - name: Push the nightly tag to Codeberg
+        env:
+          CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+        run: |
+          echo "::add-mask::$CODEBERG_TOKEN"
+          git remote add codeberg "https://oauth2:${CODEBERG_TOKEN}@codeberg.org/viniciusdof/epistola.git"
+          git push codeberg nightly --force
+
+      - name: Publish nightly release on Codeberg
+        env:
+          CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+          SHA: ${{ needs.check-for-changes.outputs.sha }}
+        run: |
+          api="https://codeberg.org/api/v1/repos/viniciusdof/epistola"
+
+          existing_id="$(curl -s -H "Authorization: token $CODEBERG_TOKEN" "$api/releases/tags/nightly" | jq -r '.id // empty')"
+          if [ -n "$existing_id" ]; then
+            curl -sf -X DELETE -H "Authorization: token $CODEBERG_TOKEN" "$api/releases/$existing_id"
+          fi
+
+          payload="$(jq -n --arg sha "$SHA" '{
+            tag_name: "nightly",
+            name: "Nightly",
+            body: ("Automated nightly build from commit " + $sha + ".\n\nThis release is overwritten on every build and always tracks the tip of `main`. It is unstable — expect breakage and reverted features."),
+            prerelease: true,
+            target_commitish: $sha
+          }')"
+
+          release_id="$(curl -sf -X POST -H "Authorization: token $CODEBERG_TOKEN" -H "Content-Type: application/json" \
+            -d "$payload" "$api/releases" | jq -r '.id')"
+
+          for f in dist/*.tar.gz dist/*.zip; do
+            [ -e "$f" ] || continue
+            curl -sf -X POST -H "Authorization: token $CODEBERG_TOKEN" \
+              -F "attachment=@$f" \
+              "$api/releases/$release_id/assets?name=$(basename "$f")"
+          done
