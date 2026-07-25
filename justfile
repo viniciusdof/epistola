@@ -61,6 +61,11 @@ coverage-check:
 build:
     cargo build --all-targets
 
+# Build release binaries for the CLI and GUI.
+[group('build')]
+build-release:
+    cargo build --release -p epistola-cli -p epistola-gui
+
 # Run the CLI, forwarding ARGS.
 [group('build')]
 run *ARGS:
