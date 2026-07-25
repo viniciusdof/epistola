@@ -9,7 +9,6 @@ publish.workspace = true
 repository.workspace = true
 
 [[bin]]
-
 name = "epistola_gui"
 path = "src/main.rs"
 
@@ -38,11 +37,3 @@ embed-resource = "3.0.11"
 
 [lints]
 workspace = true
-
-[package.metadata.bundle]
-name = "Epistola"
-identifier = "dev.epistola.gui"
-icon = ["resources/icon.svg", "resources/icon.icns", "resources/icon.ico", "resources/icon.png"]
-short_description = "GPUI-based desktop client for epistola"
-category = "Developer Tool"
-osx_minimum_system_version = "11.0"

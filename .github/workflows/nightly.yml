@@ -81,8 +81,7 @@ jobs:
             build-essential clang cmake lld llvm \
             libasound2-dev libfontconfig-dev libglib2.0-dev \
             libssl-dev libva-dev libvulkan1 libwayland-dev \
-            libx11-xcb-dev libxkbcommon-x11-dev \
-            squashfs-tools
+            libx11-xcb-dev libxkbcommon-x11-dev
 
       - uses: jdx/mise-action@v4
         if: matrix.platform != 'windows'
@@ -108,45 +107,33 @@ jobs:
         if: matrix.platform == 'windows'
         run: cargo build --release -p epistola-cli -p epistola-gui
 
-      - name: Install cargo-bundle
-        run: cargo install cargo-bundle
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
+
+      - name: Generate shell completions
+        if: matrix.platform == 'linux'
+        run: |
+          mkdir -p completions
+          target/release/epistola completions bash > completions/epistola.bash
+          target/release/epistola completions zsh > completions/epistola.zsh
+          target/release/epistola completions fish > completions/epistola.fish
 
       - name: Package (Linux)
         if: matrix.platform == 'linux'
-        run: |
-          cargo bundle --release -p epistola-gui -f deb
-          cargo bundle --release -p epistola-gui -f appimage
-
-          mkdir -p dist
-          cp target/release/bundle/deb/*.deb dist/
-          cp target/release/bundle/appimage/*.AppImage dist/
-          tar -czf "dist/epistola-nightly-cli-linux-${{ matrix.arch }}.tar.gz" \
-            -C target/release epistola
+        run: cargo packager --release -f deb,appimage,pacman -c packager.toml
 
       - name: Package (macOS)
         if: matrix.platform == 'macos'
-        run: |
-          cargo bundle --release -p epistola-gui -f osx
-          codesign --force --deep --sign - target/release/bundle/osx/Epistola.app
-
-          mkdir -p stage dist
-          cp -R target/release/bundle/osx/Epistola.app stage/
-          ln -s /Applications stage/Applications
-          hdiutil create -volname Epistola -srcfolder stage -ov -format UDZO \
-            "dist/epistola-nightly-macos-${{ matrix.arch }}.dmg"
-
-          codesign --force --sign - target/release/epistola
-          tar -czf "dist/epistola-nightly-cli-macos-${{ matrix.arch }}.tar.gz" \
-            -C target/release epistola
+        run: cargo packager --release -f app,dmg -c packager.toml
 
       - name: Package (Windows)
         if: matrix.platform == 'windows'
-        run: |
-          cargo bundle --release -p epistola-gui -f msi
+        run: cargo packager --release -f nsis -c packager.toml
 
+      - name: Collect packaged artifacts
+        run: |
           mkdir -p dist
-          cp target/release/bundle/msi/*.msi dist/
-          cp target/release/epistola.exe "dist/epistola-nightly-cli-windows-${{ matrix.arch }}.exe"
+          find target/release/packages -maxdepth 1 -type f -exec cp {} dist/ \;
 
       - uses: actions/upload-artifact@v7
         with:
@@ -184,12 +171,11 @@ jobs:
 
             This release is overwritten on every build and always tracks the tip of `main`. It is unstable — expect breakage and reverted features.
           files: |
-            dist/*.tar.gz
             dist/*.exe
             dist/*.dmg
             dist/*.deb
             dist/*.AppImage
-            dist/*.msi
+            dist/*.tar.gz
 
       - name: Push the nightly tag to Codeberg
         env:
@@ -222,7 +208,7 @@ jobs:
           release_id="$(curl -sf -X POST -H "Authorization: token $CODEBERG_TOKEN" -H "Content-Type: application/json" \
             -d "$payload" "$api/releases" | jq -r '.id')"
 
-          for f in dist/*.tar.gz dist/*.exe dist/*.dmg dist/*.deb dist/*.AppImage dist/*.msi; do
+          for f in dist/*.exe dist/*.dmg dist/*.deb dist/*.AppImage dist/*.tar.gz; do
             [ -e "$f" ] || continue
             curl -sf -X POST -H "Authorization: token $CODEBERG_TOKEN" \
               -F "attachment=@$f" \

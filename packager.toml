@@ -1,0 +1,39 @@
+name = "epistola"
+product_name = "Epistola"
+identifier = "com.viniciusdof.epistola"
+description = "GPUI-based desktop client for epistola"
+category = "DeveloperTool"
+version = "0.1.0"
+out_dir = "target/release/packages"
+binaries_dir = "target/release"
+
+icons = ["resources/icon.icns", "resources/icon.ico", "resources/icon.png"]
+
+binaries = [
+    { path = "epistola_gui", main = true },
+    { path = "epistola" },
+]
+
+[macos]
+signing_identity = "-"
+minimum_system_version = "11.0"
+
+[dmg]
+window_size = { width = 540, height = 380 }
+app_position = { x = 140, y = 180 }
+application_folder_position = { x = 400, y = 180 }
+
+[deb]
+files = { "completions/epistola.bash" = "usr/share/bash-completion/completions/epistola", "completions/epistola.zsh" = "usr/share/zsh/vendor-completions/_epistola", "completions/epistola.fish" = "usr/share/fish/vendor_completions.d/epistola.fish" }
+depends = [
+    "libasound2t64 | libasound2",
+    "libfontconfig1",
+    "libglib2.0-0t64 | libglib2.0-0",
+    "libssl3",
+    "libva2",
+    "libvulkan1",
+    "libwayland-client0",
+    "libwayland-cursor0",
+    "libwayland-egl1",
+    "libxkbcommon0",
+]
