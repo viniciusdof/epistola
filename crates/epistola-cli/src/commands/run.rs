@@ -1,10 +1,8 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Args;
-use epistola_engine::history::LoggedResponse;
 use epistola_engine::run::{execute_and_log, parse_var_overrides, resolve_saved_request};
-use epistola_engine::EngineError;
 
 use crate::client_config::ClientArgs;
 use crate::output;
@@ -58,38 +56,12 @@ pub async fn run(args: RunArgs) -> Result<()> {
         &collection.manifest.client,
     )
     .await?;
+    let status = outcome.response.status;
 
-    if let Some(warning) = outcome.history_warning {
-        eprintln!(
-            "Warning: failed to write history entry: {:#}",
-            anyhow::Error::from(warning)
-        );
-    }
+    output::report_outcome(outcome, args.verbose, args.output.as_deref(), args.json)?;
 
-    if args.verbose {
-        eprint!("{}", output::format_response_head(&outcome.response));
-    }
-
-    if let Some(path) = &args.output {
-        output::write_response_body(&outcome.response, path)
-            .with_context(|| format!("failed to write response body to '{}'", path.display()))?;
-        print!("{}", output::format_response_head(&outcome.response));
-        println!(
-            "Saved {} bytes to {}",
-            outcome.response.body.len(),
-            path.display()
-        );
-    } else if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&LoggedResponse::from(&outcome.response))?
-        );
-    } else {
-        print!("{}", output::format_response(&outcome.response));
-    }
-
-    if args.check_status && outcome.response.status >= 400 {
-        return Err(EngineError::HttpStatusFailure(outcome.response.status).into());
+    if args.check_status && status >= 400 {
+        return Err(epistola_engine::EngineError::HttpStatusFailure(status).into());
     }
 
     Ok(())
@@ -99,6 +71,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use epistola_engine::EngineError;
     use epistola_format::CollectionManifest;
     use tempfile::tempdir;
     use wiremock::matchers::method;

@@ -166,6 +166,12 @@ pub fn lint_collection(
     Ok(LintReport { checked, issues })
 }
 
+/// Where a request named `name` would live under `dir` — the collection's
+/// own root, a request's own directory, or a rename/duplicate target.
+pub(crate) fn slugified_request_path(dir: &Path, name: &str) -> PathBuf {
+    dir.join(format!("{}.req.toml", slugify(name)))
+}
+
 pub fn create_request(
     cwd: &Path,
     dir: &str,
@@ -179,7 +185,7 @@ pub fn create_request(
     } else {
         collection.root.join(dir)
     };
-    let path = target_dir.join(format!("{}.req.toml", slugify(name)));
+    let path = slugified_request_path(&target_dir, name);
     RequestFile::create(&path, name, method, url)?;
     Ok(path)
 }
@@ -191,12 +197,20 @@ pub fn delete_request(path: &Path) -> Result<(), EngineError> {
     })
 }
 
-pub fn rename_request(path: &Path, new_name: &str) -> Result<PathBuf, EngineError> {
+/// Loads `path`, renames it in memory to `new_name`, and computes where it
+/// would land under the (unchanged) parent directory — shared by
+/// `rename_request` and `duplicate_request`, which differ only in whether
+/// the original file is removed afterward.
+fn renamed_copy(path: &Path, new_name: &str) -> Result<(RequestFile, PathBuf), EngineError> {
     let mut file = RequestFile::load(path)?;
     file.request.name = new_name.to_string();
-
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let new_path = dir.join(format!("{}.req.toml", slugify(new_name)));
+    let new_path = slugified_request_path(dir, new_name);
+    Ok((file, new_path))
+}
+
+pub fn rename_request(path: &Path, new_name: &str) -> Result<PathBuf, EngineError> {
+    let (file, new_path) = renamed_copy(path, new_name)?;
 
     if new_path.as_path() == path {
         file.save_at(path)?;
@@ -213,12 +227,7 @@ pub fn rename_request(path: &Path, new_name: &str) -> Result<PathBuf, EngineErro
 
 /// Copies a request to a new file under `new_name`, in the same directory.
 pub fn duplicate_request(path: &Path, new_name: &str) -> Result<PathBuf, EngineError> {
-    let mut file = RequestFile::load(path)?;
-    file.request.name = new_name.to_string();
-
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let new_path = dir.join(format!("{}.req.toml", slugify(new_name)));
-
+    let (file, new_path) = renamed_copy(path, new_name)?;
     file.create_at(&new_path)?;
     Ok(new_path)
 }

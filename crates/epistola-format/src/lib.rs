@@ -4,6 +4,8 @@
 //! [`UnresolvedRequest::resolve`] with a resolver to get a send-ready
 //! `Request`.
 
+mod auth_spec;
+mod body_spec;
 mod collection;
 mod discovery;
 mod environment;
@@ -15,6 +17,8 @@ mod request_file;
 mod toml_file;
 mod variables_file;
 
+pub use auth_spec::{ApiKeyLocation, AuthSpec};
+pub use body_spec::{encode_multipart, generate_boundary, BodySpec, FormField, MultipartPart};
 pub use collection::{ClientSpec, CollectionManifest};
 pub use discovery::find_collection_root;
 pub use environment::{
@@ -22,11 +26,8 @@ pub use environment::{
     set_environment_variable,
 };
 pub use error::FormatError;
-pub use folder::{load_folder_chain, FolderManifest};
+pub use folder::{load_folder_chain, nearest_folder_history, FolderManifest};
 pub use global_config::{global_config_dir, load_global_config};
 pub use loader::LoadedCollection;
-pub use request_file::{
-    encode_multipart, generate_boundary, ApiKeyLocation, AuthSpec, BodySpec, FormField,
-    HeaderEntry, MultipartPart, QueryEntry, RequestFile, RequestSpec, UnresolvedRequest,
-};
+pub use request_file::{HeaderEntry, QueryEntry, RequestFile, RequestSpec, UnresolvedRequest};
 pub use variables_file::validate_variables_toml;

@@ -444,19 +444,6 @@ impl EditorView {
     }
 }
 
-fn disk_path_for(file: &ActiveFile, collection_root: Option<&Path>) -> Option<PathBuf> {
-    match file {
-        ActiveFile::Request(path) => Some(path.clone()),
-        ActiveFile::Folder(dir) => Some(dir.join("folder.toml")),
-        ActiveFile::Environment(name) => Some(
-            collection_root?
-                .join("environments")
-                .join(format!("{name}.toml")),
-        ),
-        ActiveFile::Config | ActiveFile::None => None,
-    }
-}
-
 /// Validates and writes `file`'s buffer verbatim. Returns whether it was
 /// written successfully, so callers can decide whether to signal "saved".
 /// Kept as a free function over plain `buffers` (rather than a method on
@@ -494,7 +481,7 @@ fn save_buffer_to_disk(
         return false;
     }
 
-    let Some(path) = disk_path_for(file, collection_root) else {
+    let Some(path) = file.disk_path(collection_root) else {
         return false;
     };
     let result = std::fs::write(&path, &text);
@@ -526,7 +513,7 @@ fn reload_touched_buffers(
     let files: Vec<ActiveFile> = buffers.keys().cloned().collect();
     let mut reloaded = Vec::new();
     for file in files {
-        let Some(disk_path) = disk_path_for(&file, collection_root) else {
+        let Some(disk_path) = file.disk_path(collection_root) else {
             continue;
         };
         if !touched.contains(&disk_path) {

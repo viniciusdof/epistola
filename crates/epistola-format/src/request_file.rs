@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine as _;
 use epistola_core::{Body, Header, Method, Request, VariableResolver};
 use serde::{Deserialize, Serialize};
 
+use crate::auth_spec::AuthSpec;
+use crate::body_spec::BodySpec;
 use crate::error::FormatError;
 use crate::folder::FolderManifest;
 use crate::toml_file::{read_toml_file, write_toml_file};
@@ -60,101 +60,6 @@ pub struct QueryEntry {
     pub value: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
-}
-
-/// `[request.auth]`, tagged on `type`.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum AuthSpec {
-    #[default]
-    None,
-    Basic {
-        username: String,
-        password: String,
-    },
-    Bearer {
-        token: String,
-    },
-    ApiKey {
-        location: ApiKeyLocation,
-        name: String,
-        value: String,
-    },
-}
-
-/// Where an `apikey` auth's name/value pair is placed on the request.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ApiKeyLocation {
-    Header,
-    Query,
-}
-
-/// `[request.body]`, same tagged pattern.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum BodySpec {
-    #[default]
-    None,
-    Text {
-        content: String,
-    },
-    Json {
-        content: String,
-    },
-    Form {
-        fields: Vec<FormField>,
-    },
-    Multipart {
-        parts: Vec<MultipartPart>,
-    },
-}
-
-impl BodySpec {
-    fn is_none(&self) -> bool {
-        matches!(self, BodySpec::None)
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct FormField {
-    pub name: String,
-    pub value: String,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub disabled: bool,
-}
-
-/// One part of a `multipart` body. `File` reads its content from disk at
-/// resolve time, relative to the request file's directory (or absolute).
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum MultipartPart {
-    Text {
-        name: String,
-        value: String,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        disabled: bool,
-    },
-    File {
-        name: String,
-        path: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        filename: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        content_type: Option<String>,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        disabled: bool,
-    },
-}
-
-impl MultipartPart {
-    fn disabled(&self) -> bool {
-        match self {
-            MultipartPart::Text { disabled, .. } | MultipartPart::File { disabled, .. } => {
-                *disabled
-            }
-        }
-    }
 }
 
 /// A request whose `{{ var }}` placeholders haven't been substituted yet.
@@ -316,7 +221,7 @@ impl UnresolvedRequest {
         }
 
         if self.history.is_none() {
-            self.history = chain.iter().rev().find_map(|f| f.history);
+            self.history = crate::folder::nearest_folder_history(chain);
         }
 
         self
@@ -346,59 +251,16 @@ impl UnresolvedRequest {
     ) -> Result<Request, FormatError> {
         let mut request = epistola_core::interpolate_request(&self.request, resolver)?;
 
-        request.body = match &self.body {
-            BodySpec::None => Body::Empty,
-            BodySpec::Text { content } | BodySpec::Json { content } => {
-                Body::text(epistola_core::interpolate(content, resolver)?)
-            }
-            BodySpec::Form { fields } => {
-                let mut serializer = form_urlencoded::Serializer::new(String::new());
-                for field in fields.iter().filter(|f| !f.disabled) {
-                    let value = epistola_core::interpolate(&field.value, resolver)?;
-                    serializer.append_pair(&field.name, &value);
-                }
-                Body::text(serializer.finish())
-            }
-            BodySpec::Multipart { parts } => {
-                let boundary = generate_boundary();
-                let body = encode_multipart(parts, resolver, base_dir, &boundary)?;
-                request.headers.push(Header::new(
-                    "Content-Type",
-                    format!("multipart/form-data; boundary={boundary}"),
-                ));
-                Body::Bytes(body)
-            }
-        };
-
-        match self.auth.as_ref().unwrap_or(&AuthSpec::None) {
-            AuthSpec::None => {}
-            AuthSpec::Bearer { token } => {
-                let token = epistola_core::interpolate(token, resolver)?;
-                request
-                    .headers
-                    .push(Header::new("Authorization", format!("Bearer {token}")));
-            }
-            AuthSpec::Basic { username, password } => {
-                let username = epistola_core::interpolate(username, resolver)?;
-                let password = epistola_core::interpolate(password, resolver)?;
-                let credentials = BASE64.encode(format!("{username}:{password}"));
-                request
-                    .headers
-                    .push(Header::new("Authorization", format!("Basic {credentials}")));
-            }
-            AuthSpec::ApiKey {
-                location,
-                name,
-                value,
-            } => {
-                let name = epistola_core::interpolate(name, resolver)?;
-                let value = epistola_core::interpolate(value, resolver)?;
-                match location {
-                    ApiKeyLocation::Header => request.headers.push(Header::new(name, value)),
-                    ApiKeyLocation::Query => request.query.push((name, value)),
-                }
-            }
+        let (body, content_type) = self.body.resolve(resolver, base_dir)?;
+        request.body = body;
+        if let Some(header) = content_type {
+            request.headers.push(header);
         }
+
+        let auth = self.auth.as_ref().unwrap_or(&AuthSpec::None);
+        let (auth_headers, auth_query) = auth.resolve_headers_and_query(resolver)?;
+        request.headers.extend(auth_headers);
+        request.query.extend(auth_query);
 
         Ok(request)
     }
@@ -416,87 +278,12 @@ fn upsert_header(headers: &mut Vec<Header>, name: &str, value: &str) {
     }
 }
 
-/// Random-enough boundary that won't collide with real body content. Uses
-/// `RandomState`'s OS-seeded hasher instead of pulling in a `rand`
-/// dependency for something that isn't a security boundary. Public so the
-/// ad-hoc CLI can encode a `multipart` body the same way a saved request
-/// does, without duplicating the encoding logic.
-pub fn generate_boundary() -> String {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-
-    let a = RandomState::new().build_hasher().finish();
-    let b = RandomState::new().build_hasher().finish();
-    format!("epistola-boundary-{a:016x}{b:016x}")
-}
-
-/// Encodes `parts` as a `multipart/form-data` body. Public for the same
-/// reason as [`generate_boundary`].
-pub fn encode_multipart(
-    parts: &[MultipartPart],
-    resolver: &dyn VariableResolver,
-    base_dir: &std::path::Path,
-    boundary: &str,
-) -> Result<Vec<u8>, FormatError> {
-    let mut body = Vec::new();
-    for part in parts.iter().filter(|p| !p.disabled()) {
-        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
-        match part {
-            MultipartPart::Text { name, value, .. } => {
-                let name = epistola_core::interpolate(name, resolver)?;
-                let value = epistola_core::interpolate(value, resolver)?;
-                body.extend_from_slice(
-                    format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
-                );
-                body.extend_from_slice(value.as_bytes());
-            }
-            MultipartPart::File {
-                name,
-                path,
-                filename,
-                content_type,
-                ..
-            } => {
-                let name = epistola_core::interpolate(name, resolver)?;
-                let path = epistola_core::interpolate(path, resolver)?;
-                let filename = match filename {
-                    Some(f) => epistola_core::interpolate(f, resolver)?,
-                    None => std::path::Path::new(&path)
-                        .file_name()
-                        .map(|f| f.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.clone()),
-                };
-
-                let full_path = base_dir.join(&path);
-                let content = std::fs::read(&full_path).map_err(|source| FormatError::Io {
-                    path: full_path,
-                    source,
-                })?;
-
-                body.extend_from_slice(
-                    format!(
-                        "Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\n"
-                    )
-                    .as_bytes(),
-                );
-                if let Some(content_type) = content_type {
-                    let content_type = epistola_core::interpolate(content_type, resolver)?;
-                    body.extend_from_slice(format!("Content-Type: {content_type}\r\n").as_bytes());
-                }
-                body.extend_from_slice(b"\r\n");
-                body.extend_from_slice(&content);
-            }
-        }
-        body.extend_from_slice(b"\r\n");
-    }
-    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
-    Ok(body)
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine as _;
     use epistola_core::LayeredVariableResolver;
     use tempfile::tempdir;
 

@@ -31,13 +31,14 @@ impl ActiveFile {
         matches!(self, ActiveFile::Request(_))
     }
 
-    pub fn disk_path(&self, collection: Option<&CollectionTree>) -> Option<PathBuf> {
+    /// `collection_root` is only needed for `Environment` — the others
+    /// don't depend on which collection is open.
+    pub fn disk_path(&self, collection_root: Option<&Path>) -> Option<PathBuf> {
         match self {
             ActiveFile::Request(path) => Some(path.clone()),
             ActiveFile::Folder(dir) => Some(dir.join("folder.toml")),
             ActiveFile::Environment(name) => Some(
-                collection?
-                    .root
+                collection_root?
                     .join("environments")
                     .join(format!("{name}.toml")),
             ),
@@ -63,6 +64,24 @@ pub enum PromptKind {
     New { dir: String },
     Rename { path: PathBuf },
     Duplicate { path: PathBuf },
+}
+
+impl PromptKind {
+    pub(crate) fn title(&self) -> &'static str {
+        match self {
+            PromptKind::New { .. } => "New Request",
+            PromptKind::Rename { .. } => "Rename Request",
+            PromptKind::Duplicate { .. } => "Duplicate Request",
+        }
+    }
+
+    pub(crate) fn confirm_label(&self) -> &'static str {
+        match self {
+            PromptKind::New { .. } => "Create",
+            PromptKind::Rename { .. } => "Rename",
+            PromptKind::Duplicate { .. } => "Duplicate",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -418,12 +437,6 @@ impl AppState {
             self.refresh_url_preview(path);
         }
     }
-
-    /// Closes the tab for `path` if it's open — used after a delete, where
-    /// there's no file left to prompt "unsaved changes" about.
-    pub fn close_request_tab_if_open(&mut self, path: &Path) {
-        self.close_tab(&ActiveFile::Request(path.to_path_buf()));
-    }
 }
 
 /// Resolves the initial text/read-only-ness for a tab's buffer — used by
@@ -448,7 +461,7 @@ pub(crate) fn load_buffer_source(
             Some((text, true))
         }
         _ => {
-            let path = file.disk_path(collection)?;
+            let path = file.disk_path(collection.map(|c| c.root.as_path()))?;
             match std::fs::read_to_string(&path) {
                 Ok(text) => Some((text, false)),
                 Err(_) => Some((format!("Could not read {}", path.display()), true)),

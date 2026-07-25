@@ -1,9 +1,8 @@
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use epistola_engine::adhoc;
-use epistola_engine::EngineError;
 
 use crate::cli::Cli;
 use crate::output;
@@ -35,38 +34,17 @@ pub async fn run(args: Vec<String>, cwd: &Path) -> Result<()> {
     }
 
     let outcome = adhoc::run_adhoc_request(&request, cwd, &overrides).await?;
+    let status = outcome.response.status;
 
-    if let Some(warning) = outcome.history_warning {
-        eprintln!(
-            "Warning: failed to write history entry: {:#}",
-            anyhow::Error::from(warning)
-        );
-    }
-
-    if verbose {
-        eprint!("{}", output::format_response_head(&outcome.response));
-    }
-
-    if let Some(path) = &output_path {
-        output::write_response_body(&outcome.response, path)
-            .with_context(|| format!("failed to write response body to '{}'", path.display()))?;
-        print!("{}", output::format_response_head(&outcome.response));
-        println!(
-            "Saved {} bytes to {}",
-            outcome.response.body.len(),
-            path.display()
-        );
-    } else {
-        print!("{}", output::format_response(&outcome.response));
-    }
+    output::report_outcome(outcome, verbose, output_path.as_deref(), false)?;
 
     if let (Some(name), Some(path)) = (&save_as, &save_path) {
         adhoc::save_request(name, &request, body_spec, path)?;
         println!("Saved to {}", path.display());
     }
 
-    if check_status && outcome.response.status >= 400 {
-        return Err(EngineError::HttpStatusFailure(outcome.response.status).into());
+    if check_status && status >= 400 {
+        return Err(epistola_engine::EngineError::HttpStatusFailure(status).into());
     }
 
     Ok(())
@@ -76,6 +54,7 @@ pub async fn run(args: Vec<String>, cwd: &Path) -> Result<()> {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use epistola_engine::EngineError;
     use epistola_format::{CollectionManifest, RequestFile};
     use tempfile::tempdir;
     use wiremock::matchers::{header, method, path as path_matcher, query_param};

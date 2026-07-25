@@ -1,6 +1,9 @@
 use std::path::Path;
 
+use anyhow::{Context, Result};
 use epistola_core::{Header, Request, Response};
+use epistola_engine::history::LoggedResponse;
+use epistola_engine::run::RunOutcome;
 
 /// Status line, headers, blank line, then body (pretty JSON if applicable).
 pub fn format_response(response: &Response) -> String {
@@ -53,6 +56,53 @@ fn format_text_body(text: &str, headers: &[Header]) -> String {
 /// Like `format_response`, but for a request that hasn't been sent yet.
 pub fn format_request(request: &Request) -> String {
     epistola_engine::output::format_request_text(request)
+}
+
+/// Reports a completed run: the history warning (if any), the verbose
+/// response head, then the body per `--output`/`--json`/default. Shared by
+/// `commands::run` (saved requests) and `commands::send` (ad-hoc requests,
+/// which never pass `json: true` — that flag doesn't exist for them).
+///
+/// Deliberately doesn't handle `--check-status` itself: `send` interleaves
+/// `--save` between printing the response and that exit-code check, so
+/// each call site checks `outcome.response.status` (captured before this
+/// call consumes `outcome`) on its own, after whatever else it needs to do.
+pub fn report_outcome(
+    outcome: RunOutcome,
+    verbose: bool,
+    output_path: Option<&Path>,
+    json: bool,
+) -> Result<()> {
+    if let Some(warning) = outcome.history_warning {
+        eprintln!(
+            "Warning: failed to write history entry: {:#}",
+            anyhow::Error::from(warning)
+        );
+    }
+
+    if verbose {
+        eprint!("{}", format_response_head(&outcome.response));
+    }
+
+    if let Some(path) = output_path {
+        write_response_body(&outcome.response, path)
+            .with_context(|| format!("failed to write response body to '{}'", path.display()))?;
+        print!("{}", format_response_head(&outcome.response));
+        println!(
+            "Saved {} bytes to {}",
+            outcome.response.body.len(),
+            path.display()
+        );
+    } else if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&LoggedResponse::from(&outcome.response))?
+        );
+    } else {
+        print!("{}", format_response(&outcome.response));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

@@ -2,8 +2,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::auth_spec::AuthSpec;
 use crate::error::FormatError;
-use crate::request_file::{AuthSpec, HeaderEntry};
+use crate::request_file::HeaderEntry;
 use crate::toml_file::{read_toml_file, write_toml_file};
 
 /// `folder.toml` — optional, at most one per directory (including the
@@ -75,6 +76,13 @@ pub fn load_folder_chain(
         }
     }
     Ok(chain)
+}
+
+/// Nearest-explicit-wins across `chain` (read leaf-to-root, i.e. reversed):
+/// the closest folder with an opinion on `history` wins, or `None` if none
+/// of them have one.
+pub fn nearest_folder_history(chain: &[FolderManifest]) -> Option<bool> {
+    chain.iter().rev().find_map(|f| f.history)
 }
 
 #[cfg(test)]

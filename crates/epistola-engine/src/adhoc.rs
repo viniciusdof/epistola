@@ -1,14 +1,12 @@
 use std::path::{Path, PathBuf};
 
-use epistola_core::{Body, HttpExecutor, LayeredVariableResolver, Method, Request};
+use epistola_core::{Body, LayeredVariableResolver, Method, Request};
 use epistola_format::{load_folder_chain, BodySpec, LoadedCollection, MultipartPart, RequestFile};
-use epistola_http::ReqwestExecutor;
 
-use crate::client::{resolve_client_config, ClientOverrides};
+use crate::client::ClientOverrides;
 use crate::error::EngineError;
-use crate::history;
-use crate::requests::slugify;
-use crate::run::RunOutcome;
+use crate::requests::slugified_request_path;
+use crate::run::{execute_and_log, RunOutcome};
 
 /// The ad-hoc request's body, before encoding. Narrower than `BodySpec`
 /// (only what a `-d`/`-F`-style caller can produce) so matching over it can
@@ -77,10 +75,7 @@ pub fn build_request(request: AdHocRequest, cwd: &Path) -> Result<Request, Engin
 /// the collection default, falling back to enabled.
 fn history_enabled_for_adhoc(collection: &LoadedCollection, cwd: &Path) -> bool {
     let chain = load_folder_chain(&collection.root, cwd).unwrap_or_default();
-    chain
-        .iter()
-        .rev()
-        .find_map(|folder| folder.history)
+    epistola_format::nearest_folder_history(&chain)
         .or(collection.manifest.history)
         .unwrap_or(true)
 }
@@ -100,22 +95,11 @@ pub async fn run_adhoc_request(
         .map(|c| c.manifest.client.clone())
         .unwrap_or_default();
     let base_dir = collection.as_ref().map(|c| c.root.as_path()).unwrap_or(cwd);
-    let client_config = resolve_client_config(overrides, &client_spec, base_dir)?;
+    let history_enabled = collection
+        .as_ref()
+        .is_some_and(|c| history_enabled_for_adhoc(c, cwd));
 
-    let executor = ReqwestExecutor::with_config(client_config)?;
-    let response = executor.execute(request).await?;
-
-    let history_warning = match &collection {
-        Some(collection) if history_enabled_for_adhoc(collection, cwd) => {
-            history::append_entry(&collection.root, request, &response).err()
-        }
-        _ => None,
-    };
-
-    Ok(RunOutcome {
-        response,
-        history_warning,
-    })
+    execute_and_log(request, history_enabled, base_dir, overrides, &client_spec).await
 }
 
 /// Computes the path `--save NAME` would write to, erroring if it's outside
@@ -126,7 +110,7 @@ pub fn prepare_save_path(name: &str, cwd: &Path) -> Result<PathBuf, EngineError>
             message: "--save requires being inside a collection (no epistola.toml found in this or any parent directory)",
             source: Box::new(source),
         })?;
-    let path = collection.root.join(format!("{}.req.toml", slugify(name)));
+    let path = slugified_request_path(&collection.root, name);
     if path.is_file() {
         return Err(EngineError::AlreadyExists { path });
     }
@@ -154,6 +138,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+    use crate::history;
 
     fn write(dir: &Path, rel: &str, content: &str) {
         let path = dir.join(rel);
