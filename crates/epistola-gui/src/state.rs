@@ -6,7 +6,6 @@ use epistola_engine::history::HistoryEntry;
 use epistola_format::{FolderManifest, RequestFile};
 use gpui::Pixels;
 
-use crate::buffer::EditorBuffer;
 use crate::collection::{CollectionTree, RequestEntry};
 use crate::components::response_drawer;
 use crate::components::sidebar::{self, SidebarRow};
@@ -107,7 +106,6 @@ pub struct AppState {
     pub response_subtab: ResponseSubTab,
     pub collection_action_error: Option<String>,
     pub recent_collections: Vec<PathBuf>,
-    pub editor_buffers: HashMap<ActiveFile, EditorBuffer>,
     pub url_previews: HashMap<PathBuf, UrlPreview>,
     pub history_entries: Vec<HistoryEntry>,
     pub sidebar_rows: Vec<SidebarRow>,
@@ -136,7 +134,6 @@ impl AppState {
             response_subtab: ResponseSubTab::default(),
             collection_action_error: None,
             recent_collections: Vec::new(),
-            editor_buffers: HashMap::new(),
             url_previews: HashMap::new(),
             history_entries: Vec::new(),
             sidebar_rows: Vec::new(),
@@ -167,7 +164,6 @@ impl AppState {
         self.response_subtab = ResponseSubTab::default();
         self.collection_action_error = None;
         self.recent_collections = epistola_engine::recent::list().unwrap_or_default();
-        self.editor_buffers.clear();
         self.url_previews.clear();
         self.refresh_sidebar_rows();
     }
@@ -203,10 +199,8 @@ impl AppState {
         };
         self.collection = Some(result);
         self.refresh_sidebar_rows();
-        let active = self.active_file.clone();
-        self.ensure_buffer(&active);
-        if let ActiveFile::Request(path) = &active {
-            self.refresh_url_preview(path);
+        if let ActiveFile::Request(path) = self.active_file.clone() {
+            self.refresh_url_preview(&path);
         }
     }
 
@@ -222,36 +216,6 @@ impl AppState {
 
     pub fn is_collection_loading(&self) -> bool {
         self.collection.is_none()
-    }
-
-    fn ensure_buffer(&mut self, file: &ActiveFile) {
-        if self.editor_buffers.contains_key(file) {
-            return;
-        }
-        let buffer = match file {
-            ActiveFile::None => return,
-            ActiveFile::Config => {
-                let vars = epistola_format::load_global_config().unwrap_or_default();
-                let text = if vars.is_empty() {
-                    "# no global variables set yet".to_string()
-                } else {
-                    let mut lines = vec!["[variables]".to_string()];
-                    lines.extend(vars.iter().map(|(k, v)| format!("{k} = \"{v}\"")));
-                    lines.join("\n")
-                };
-                EditorBuffer::read_only(text)
-            }
-            _ => {
-                let Some(path) = file.disk_path(self.collection()) else {
-                    return;
-                };
-                match std::fs::read_to_string(&path) {
-                    Ok(text) => EditorBuffer::new(text),
-                    Err(_) => EditorBuffer::read_only(format!("Could not read {}", path.display())),
-                }
-            }
-        };
-        self.editor_buffers.insert(file.clone(), buffer);
     }
 
     pub fn refresh_url_preview(&mut self, path: &Path) {
@@ -310,7 +274,6 @@ impl AppState {
         if !self.open_tabs.contains(&file) {
             self.open_tabs.push(file.clone());
         }
-        self.ensure_buffer(&file);
         if let ActiveFile::Request(path) = &file {
             self.refresh_url_preview(path);
         }
@@ -341,7 +304,6 @@ impl AppState {
         };
         self.open_tabs.remove(idx);
         self.activity.remove(file);
-        self.editor_buffers.remove(file);
         if &self.active_file == file {
             self.active_file = self
                 .open_tabs
@@ -368,24 +330,6 @@ impl AppState {
         self.activity
             .get(&self.active_file)
             .unwrap_or(&ActivityResult::Idle)
-    }
-
-    pub fn active_buffer(&self) -> Option<&EditorBuffer> {
-        self.editor_buffers.get(&self.active_file)
-    }
-
-    pub fn active_buffer_mut(&mut self) -> Option<&mut EditorBuffer> {
-        self.editor_buffers.get_mut(&self.active_file)
-    }
-
-    pub fn has_unsaved_changes(&self) -> bool {
-        self.editor_buffers.values().any(EditorBuffer::is_dirty)
-    }
-
-    pub fn is_dirty(&self, file: &ActiveFile) -> bool {
-        self.editor_buffers
-            .get(file)
-            .is_some_and(EditorBuffer::is_dirty)
     }
 
     /// A no-op if the collection isn't loaded or defines no environments.
@@ -463,14 +407,12 @@ impl AppState {
         if let Some(slot) = self.open_tabs.iter_mut().find(|f| **f == old_file) {
             *slot = new_file.clone();
         }
-        self.editor_buffers.remove(&old_file);
         if let Some(activity) = self.activity.remove(&old_file) {
             self.activity.insert(new_file.clone(), activity);
         }
         if self.active_file == old_file {
             self.active_file = new_file.clone();
         }
-        self.ensure_buffer(&new_file);
         self.url_previews.remove(old);
         if let ActiveFile::Request(path) = &new_file {
             self.refresh_url_preview(path);
@@ -482,46 +424,34 @@ impl AppState {
     pub fn close_request_tab_if_open(&mut self, path: &Path) {
         self.close_tab(&ActiveFile::Request(path.to_path_buf()));
     }
+}
 
-    /// Reacts to a debounced batch of externally-touched paths under the open collection.
-    pub fn handle_fs_events(&mut self, paths: &[PathBuf]) {
-        if self.collection().is_none() {
-            return;
+/// Resolves the initial text/read-only-ness for a tab's buffer — used by
+/// `EpistolaGui` to populate `EditorView` when a tab is opened, since buffer
+/// storage itself lives on `EditorView`, not `AppState`. `None` means the
+/// file has nothing to load (e.g. `ActiveFile::None`).
+pub(crate) fn load_buffer_source(
+    file: &ActiveFile,
+    collection: Option<&CollectionTree>,
+) -> Option<(String, bool)> {
+    match file {
+        ActiveFile::None => None,
+        ActiveFile::Config => {
+            let vars = epistola_format::load_global_config().unwrap_or_default();
+            let text = if vars.is_empty() {
+                "# no global variables set yet".to_string()
+            } else {
+                let mut lines = vec!["[variables]".to_string()];
+                lines.extend(vars.iter().map(|(k, v)| format!("{k} = \"{v}\"")));
+                lines.join("\n")
+            };
+            Some((text, true))
         }
-        let touched: HashSet<PathBuf> = paths.iter().cloned().collect();
-
-        let files: Vec<ActiveFile> = self.editor_buffers.keys().cloned().collect();
-        for file in files {
-            let Some(disk_path) = file.disk_path(self.collection()) else {
-                continue;
-            };
-            if !touched.contains(&disk_path) {
-                continue;
-            }
-            if self.is_dirty(&file) {
-                if let Some(buffer) = self.editor_buffers.get_mut(&file) {
-                    buffer.external_change = true;
-                }
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&disk_path) else {
-                continue;
-            };
-            let Some(buffer) = self.editor_buffers.get(&file) else {
-                continue;
-            };
-            // Same text is either the app's own write echoing back through the
-            // watcher, or a no-op external touch — reloading would wipe undo
-            // history for nothing.
-            if buffer.text == text {
-                continue;
-            }
-            if let Some(buffer) = self.editor_buffers.get_mut(&file) {
-                buffer.set_text(text);
-                buffer.mark_saved();
-            }
-            if let ActiveFile::Request(path) = &file {
-                self.refresh_url_preview(path);
+        _ => {
+            let path = file.disk_path(collection)?;
+            match std::fs::read_to_string(&path) {
+                Ok(text) => Some((text, false)),
+                Err(_) => Some((format!("Could not read {}", path.display()), true)),
             }
         }
     }
@@ -578,7 +508,6 @@ mod tests {
             response_subtab: ResponseSubTab::default(),
             collection_action_error: None,
             recent_collections: Vec::new(),
-            editor_buffers: HashMap::new(),
             url_previews: HashMap::new(),
             history_entries: Vec::new(),
             sidebar_rows: Vec::new(),
@@ -590,82 +519,6 @@ mod tests {
             overlay_selected: 0,
             overlay_error: None,
         }
-    }
-
-    #[test]
-    fn clean_buffer_reloads_when_file_changes_on_disk() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("a.req.toml");
-        std::fs::write(&path, "new content").unwrap();
-
-        let mut state = state_with_collection(dir.path().to_path_buf());
-        let file = ActiveFile::Request(path.clone());
-        state
-            .editor_buffers
-            .insert(file.clone(), EditorBuffer::new("old content".to_string()));
-
-        state.handle_fs_events(std::slice::from_ref(&path));
-
-        assert_eq!(state.editor_buffers[&file].text, "new content");
-        assert!(!state.editor_buffers[&file].is_dirty());
-    }
-
-    #[test]
-    fn dirty_buffer_flags_external_change_without_overwriting() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("a.req.toml");
-        std::fs::write(&path, "disk content").unwrap();
-
-        let mut state = state_with_collection(dir.path().to_path_buf());
-        let file = ActiveFile::Request(path.clone());
-        let mut buffer = EditorBuffer::new("original".to_string());
-        buffer.replace_range(0..0, "unsaved edit ");
-        state.editor_buffers.insert(file.clone(), buffer);
-
-        state.handle_fs_events(std::slice::from_ref(&path));
-
-        let buffer = &state.editor_buffers[&file];
-        assert!(buffer.text.starts_with("unsaved edit"));
-        assert!(buffer.external_change);
-    }
-
-    #[test]
-    fn matching_text_is_a_no_op_and_preserves_undo_history() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("a.req.toml");
-
-        let mut buffer = EditorBuffer::new("abc".to_string());
-        buffer.replace_range(3..3, "d");
-        buffer.mark_saved();
-        std::fs::write(&path, &buffer.text).unwrap();
-
-        let mut state = state_with_collection(dir.path().to_path_buf());
-        let file = ActiveFile::Request(path.clone());
-        state.editor_buffers.insert(file.clone(), buffer);
-
-        state.handle_fs_events(std::slice::from_ref(&path));
-
-        let buffer = state.editor_buffers.get_mut(&file).unwrap();
-        buffer.undo();
-        assert_eq!(buffer.text, "abc");
-    }
-
-    #[test]
-    fn untouched_path_is_ignored() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("a.req.toml");
-        std::fs::write(&path, "disk").unwrap();
-        let other = dir.path().join("other.req.toml");
-
-        let mut state = state_with_collection(dir.path().to_path_buf());
-        let file = ActiveFile::Request(path.clone());
-        state
-            .editor_buffers
-            .insert(file.clone(), EditorBuffer::new("buffer text".to_string()));
-
-        state.handle_fs_events(&[other]);
-
-        assert_eq!(state.editor_buffers[&file].text, "buffer text");
     }
 
     fn empty_collection(root: PathBuf) -> CollectionTree {

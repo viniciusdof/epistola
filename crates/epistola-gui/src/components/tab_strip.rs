@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use gpui::{div, prelude::*, px, Context, IntoElement, SharedString};
 
 use crate::actions::{CloseTab, SwitchTab};
@@ -48,7 +50,11 @@ fn tab_text(state: &AppState, file: &ActiveFile) -> SharedString {
     }
 }
 
-pub fn render_tab_strip(state: &AppState, cx: &mut Context<EpistolaGui>) -> impl IntoElement {
+pub fn render_tab_strip(
+    state: &AppState,
+    dirty_tabs: &HashSet<ActiveFile>,
+    cx: &mut Context<EpistolaGui>,
+) -> impl IntoElement {
     let theme = *cx.global::<Theme>();
     div()
         .flex_none()
@@ -56,10 +62,14 @@ pub fn render_tab_strip(state: &AppState, cx: &mut Context<EpistolaGui>) -> impl
         .overflow_x_hidden()
         .border_b_1()
         .border_color(theme.border)
-        .child(render_tabs(state, theme))
+        .child(render_tabs(state, dirty_tabs, theme))
 }
 
-fn render_tabs(state: &AppState, theme: Theme) -> impl IntoElement {
+fn render_tabs(
+    state: &AppState,
+    dirty_tabs: &HashSet<ActiveFile>,
+    theme: Theme,
+) -> impl IntoElement {
     div()
         .id("tab-strip")
         .flex()
@@ -92,7 +102,7 @@ fn render_tabs(state: &AppState, theme: Theme) -> impl IntoElement {
                         .text_ellipsis()
                         .child(tab_text(state, file)),
                 )
-                .when(state.is_dirty(file), |el| {
+                .when(dirty_tabs.contains(file), |el| {
                     el.child(
                         div()
                             .flex_none()

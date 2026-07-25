@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use gpui::{
     div, prelude::*, px, App, ClickEvent, Context, Entity, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, MouseButton, PromptLevel, Render, ScrollHandle, ScrollStrategy,
-    UniformListScrollHandle, Window,
+    KeyDownEvent, MouseButton, PromptLevel, Render, ScrollStrategy, UniformListScrollHandle,
+    Window,
 };
 use nucleo_matcher::{Config, Matcher};
 
@@ -19,16 +19,15 @@ use crate::actions::{
     ToggleFolderCollapse, ToggleQuickOpen, ToggleSidebar,
 };
 use crate::collection;
-use crate::components::editor_text::EditorTextLayout;
 use crate::components::history_modal;
 use crate::components::picker::{filter_items, render_picker, PickerItem};
 use crate::components::prompt_modal::render_prompt_modal;
 use crate::components::{
     editor, home, resize_handle, response_drawer, sidebar, statusbar, titlebar,
 };
-use crate::editor_save;
+use crate::editor_view::{EditorSaved, EditorView};
 use crate::execution;
-use crate::state::{ActiveFile, ActivityResult, AppState, Overlay, PromptKind, View};
+use crate::state::{self, ActiveFile, ActivityResult, AppState, Overlay, PromptKind, View};
 use crate::text_field::TextField;
 use crate::theme::Theme;
 use crate::watcher::{self, FsWatcher};
@@ -41,13 +40,10 @@ pub(crate) enum ResizingPanel {
 
 pub struct EpistolaGui {
     pub(crate) state: AppState,
-    pub(crate) editor_focus_handle: FocusHandle,
+    pub(crate) editor_view: Entity<EditorView>,
     overlay_focus_handle: FocusHandle,
     overlay_input: Entity<TextField>,
     overlay_scroll: UniformListScrollHandle,
-    pub(crate) editor_layout: Option<EditorTextLayout>,
-    pub(crate) editor_mouse_selecting: bool,
-    editor_scroll_handle: ScrollHandle,
     overlay_items: Vec<PickerItem>,
     overlay_matcher: Matcher,
     pub(crate) resizing: Option<ResizingPanel>,
@@ -63,17 +59,23 @@ impl EpistolaGui {
         })
         .detach();
 
+        let editor_view = cx.new(EditorView::new);
+        cx.subscribe(&editor_view, |this, _view, event: &EditorSaved, cx| {
+            if let ActiveFile::Request(path) = &event.file {
+                this.state.refresh_url_preview(path);
+            }
+            cx.notify();
+        })
+        .detach();
+
         let state = AppState::new(cwd.clone());
 
         let this = Self {
             state,
-            editor_focus_handle: cx.focus_handle(),
+            editor_view,
             overlay_focus_handle: cx.focus_handle(),
             overlay_input,
             overlay_scroll: UniformListScrollHandle::default(),
-            editor_layout: None,
-            editor_mouse_selecting: false,
-            editor_scroll_handle: ScrollHandle::new(),
             overlay_items: Vec::new(),
             overlay_matcher: Matcher::new(Config::DEFAULT),
             resizing: None,
@@ -92,15 +94,42 @@ impl EpistolaGui {
     }
 
     pub(crate) fn handle_fs_events(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
-        self.state.handle_fs_events(&paths);
+        let collection_root = self.state.collection().map(|c| c.root.as_path());
+        let reloaded = self
+            .editor_view
+            .update(cx, |ev, _| ev.handle_fs_events(&paths, collection_root));
+        for path in reloaded {
+            self.state.refresh_url_preview(&path);
+        }
         collection::spawn_refresh_collection(self.state.cwd.clone(), cx);
         cx.notify();
+    }
+
+    /// Ensures `EditorView` has a buffer for (and knows about) the currently
+    /// active tab — called after any `AppState` mutation that opens, closes,
+    /// switches, or renames a tab, since buffer storage lives on `EditorView`
+    /// while tab/file bookkeeping stays on `AppState`.
+    pub(crate) fn sync_editor_view(&mut self, cx: &mut Context<Self>) {
+        let file = self.state.active_file.clone();
+        if !self.editor_view.read(cx).has_buffer(&file) {
+            if let Some((text, read_only)) =
+                state::load_buffer_source(&file, self.state.collection())
+            {
+                self.editor_view
+                    .update(cx, |ev, _| ev.ensure_buffer(file.clone(), text, read_only));
+            }
+        }
+        let collection_root = self.state.collection().map(|c| c.root.clone());
+        self.editor_view.update(cx, |ev, _| {
+            ev.set_active_file(file.clone());
+            ev.set_collection_root(collection_root);
+        });
     }
 }
 
 impl Focusable for EpistolaGui {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.editor_focus_handle.clone()
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.editor_view.read(cx).focus_handle.clone()
     }
 }
 
@@ -133,7 +162,8 @@ impl EpistolaGui {
 
     pub(crate) fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.state.close_overlay();
-        window.focus(&self.editor_focus_handle, cx);
+        let focus_handle = self.editor_view.read(cx).focus_handle.clone();
+        window.focus(&focus_handle, cx);
         cx.notify();
     }
 
@@ -191,6 +221,7 @@ impl EpistolaGui {
 
     fn open_settings(&mut self, cx: &mut Context<Self>) {
         self.state.open_config();
+        self.sync_editor_view(cx);
         cx.notify();
     }
 
@@ -365,6 +396,10 @@ impl EpistolaGui {
                         Ok(()) => {
                             collection::spawn_refresh_collection(this.state.cwd.clone(), cx);
                             this.state.close_request_tab_if_open(&path);
+                            this.editor_view.update(cx, |ev, _| {
+                                ev.remove_buffer(&ActiveFile::Request(path.clone()))
+                            });
+                            this.sync_editor_view(cx);
                         }
                         Err(err) => {
                             this.state.collection_action_error = Some(err.to_string());
@@ -401,9 +436,15 @@ impl EpistolaGui {
                 match &kind {
                     PromptKind::New { .. } | PromptKind::Duplicate { .. } => {
                         self.state.open_request(new_path);
+                        self.sync_editor_view(cx);
                     }
                     PromptKind::Rename { path } => {
+                        let old_file = ActiveFile::Request(path.clone());
+                        let new_file = ActiveFile::Request(new_path.clone());
+                        self.editor_view
+                            .update(cx, |ev, _| ev.rename_buffer(&old_file, new_file));
                         self.state.replace_request_tab(path, new_path);
+                        self.sync_editor_view(cx);
                     }
                 }
                 self.close_overlay(window, cx);
@@ -427,8 +468,9 @@ impl EpistolaGui {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.state.has_unsaved_changes() {
+        if !self.editor_view.read(cx).has_unsaved_changes() {
             self.state.begin_open_collection(path.clone());
+            self.editor_view.update(cx, |ev, _| ev.clear());
             collection::spawn_load_collection(path, cx);
             cx.notify();
             return;
@@ -444,6 +486,7 @@ impl EpistolaGui {
             if let Ok(0) = answer.await {
                 let _ = weak.update(cx, |this, cx| {
                     this.state.begin_open_collection(path.clone());
+                    this.editor_view.update(cx, |ev, _| ev.clear());
                     collection::spawn_load_collection(path, cx);
                     cx.notify();
                 });
@@ -458,8 +501,10 @@ impl EpistolaGui {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.state.is_dirty(&file) {
+        if !self.editor_view.read(cx).is_dirty(&file) {
             self.state.close_tab(&file);
+            self.editor_view.update(cx, |ev, _| ev.remove_buffer(&file));
+            self.sync_editor_view(cx);
             cx.notify();
             return;
         }
@@ -473,9 +518,12 @@ impl EpistolaGui {
         cx.spawn(async move |weak, cx| match answer.await {
             Ok(0) => {
                 let _ = weak.update(cx, |this, cx| {
-                    editor_save::validate_and_save(&mut this.state, &file);
-                    if !this.state.is_dirty(&file) {
+                    this.editor_view
+                        .update(cx, |ev, cx| ev.save_file(&file, cx));
+                    if !this.editor_view.read(cx).is_dirty(&file) {
                         this.state.close_tab(&file);
+                        this.editor_view.update(cx, |ev, _| ev.remove_buffer(&file));
+                        this.sync_editor_view(cx);
                     }
                     cx.notify();
                 });
@@ -483,6 +531,8 @@ impl EpistolaGui {
             Ok(1) => {
                 let _ = weak.update(cx, |this, cx| {
                     this.state.close_tab(&file);
+                    this.editor_view.update(cx, |ev, _| ev.remove_buffer(&file));
+                    this.sync_editor_view(cx);
                     cx.notify();
                 });
             }
@@ -673,7 +723,8 @@ impl Render for EpistolaGui {
 
         let viewport: gpui::AnyElement = match self.state.view {
             View::Home => {
-                home::render_home(&self.state, &self.editor_focus_handle, cx).into_any_element()
+                let focus_handle = self.editor_view.read(cx).focus_handle.clone();
+                home::render_home(&self.state, &focus_handle, cx).into_any_element()
             }
             View::Workspace => {
                 let sidebar_width = if self.state.sidebar_collapsed {
@@ -687,6 +738,7 @@ impl Render for EpistolaGui {
                 } else {
                     editor_max_width
                 };
+                let snapshot = self.editor_view.read(cx).snapshot(&self.state.open_tabs);
                 div()
                     .flex()
                     .flex_1()
@@ -696,9 +748,9 @@ impl Render for EpistolaGui {
                     })
                     .child(editor::render_editor(
                         &self.state,
-                        self.editor_focus_handle.clone(),
-                        self.editor_scroll_handle.clone(),
+                        snapshot,
                         editor_max_width,
+                        self.editor_view.clone(),
                         cx,
                     ))
                     .into_any_element()
@@ -768,20 +820,24 @@ impl Render for EpistolaGui {
             }))
             .on_action(cx.listener(|this, action: &OpenRequestFile, _window, cx| {
                 this.state.open_request(action.path.clone());
+                this.sync_editor_view(cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, action: &OpenFolderDoc, _window, cx| {
                 this.state.open_folder_doc(action.dir.clone());
+                this.sync_editor_view(cx);
                 cx.notify();
             }))
             .on_action(
                 cx.listener(|this, action: &OpenEnvironmentDoc, _window, cx| {
                     this.state.open_environment_doc(action.name.clone());
+                    this.sync_editor_view(cx);
                     cx.notify();
                 }),
             )
             .on_action(cx.listener(|this, action: &SwitchTab, _window, cx| {
                 this.state.switch_tab(action.file.clone());
+                this.sync_editor_view(cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, action: &CloseTab, window, cx| {

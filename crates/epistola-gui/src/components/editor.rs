@@ -1,13 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use gpui::{
-    div, prelude::*, px, Context, FocusHandle, IntoElement, MouseButton, Pixels, ScrollHandle,
-};
+use gpui::{div, prelude::*, px, Context, Entity, IntoElement, Pixels};
 
 use crate::actions::RunActiveRequest;
-use crate::components::editor_text::EditorTextElement;
 use crate::components::kit::{dispatch_on_click, icon, IconName, MethodTag};
 use crate::components::tab_strip;
+use crate::editor_view::{EditorSnapshot, EditorView};
 use crate::root::EpistolaGui;
 use crate::state::{ActiveFile, ActivityResult, AppState};
 use crate::theme::Theme;
@@ -274,76 +272,12 @@ fn render_external_change_banner(theme: Theme) -> impl IntoElement {
 
 pub fn render_editor(
     state: &AppState,
-    focus_handle: FocusHandle,
-    scroll_handle: ScrollHandle,
+    snapshot: EditorSnapshot,
     max_width: Pixels,
+    editor_view: Entity<EditorView>,
     cx: &mut Context<EpistolaGui>,
 ) -> impl IntoElement {
     let theme = *cx.global::<Theme>();
-    let buffer = state.active_buffer();
-
-    let mut body = div()
-        .id("editor-code-view")
-        .track_focus(&focus_handle)
-        .track_scroll(&scroll_handle)
-        .flex_1()
-        .overflow_y_scroll()
-        .font_family("monospace")
-        .text_size(px(13.))
-        .py(px(10.));
-
-    body = match buffer {
-        Some(_) => {
-            let text_element = EditorTextElement {
-                gui: cx.entity(),
-                theme,
-                focus_handle: focus_handle.clone(),
-                scroll_handle,
-            };
-            body.key_context("Editor")
-                .on_action(cx.listener(EpistolaGui::backspace))
-                .on_action(cx.listener(EpistolaGui::delete))
-                .on_action(cx.listener(EpistolaGui::insert_newline))
-                .on_action(cx.listener(EpistolaGui::move_left))
-                .on_action(cx.listener(EpistolaGui::move_right))
-                .on_action(cx.listener(EpistolaGui::move_up))
-                .on_action(cx.listener(EpistolaGui::move_down))
-                .on_action(cx.listener(EpistolaGui::select_left))
-                .on_action(cx.listener(EpistolaGui::select_right))
-                .on_action(cx.listener(EpistolaGui::select_up))
-                .on_action(cx.listener(EpistolaGui::select_down))
-                .on_action(cx.listener(EpistolaGui::select_all))
-                .on_action(cx.listener(EpistolaGui::home))
-                .on_action(cx.listener(EpistolaGui::end))
-                .on_action(cx.listener(EpistolaGui::paste))
-                .on_action(cx.listener(EpistolaGui::cut))
-                .on_action(cx.listener(EpistolaGui::copy))
-                .on_action(cx.listener(EpistolaGui::save))
-                .on_action(cx.listener(EpistolaGui::undo))
-                .on_action(cx.listener(EpistolaGui::redo))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(EpistolaGui::on_editor_mouse_down),
-                )
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(EpistolaGui::on_editor_mouse_up),
-                )
-                .on_mouse_up_out(
-                    MouseButton::Left,
-                    cx.listener(EpistolaGui::on_editor_mouse_up),
-                )
-                .on_mouse_move(cx.listener(EpistolaGui::on_editor_mouse_move))
-                .child(text_element)
-        }
-        None => body.child(
-            div()
-                .px(px(16.))
-                .py(px(20.))
-                .text_color(theme.text_faint)
-                .child("No request open — press ⌘P to open one."),
-        ),
-    };
 
     let active_request_path: Option<PathBuf> = match &state.active_file {
         ActiveFile::Request(path) => Some(path.clone()),
@@ -353,8 +287,6 @@ pub fn render_editor(
         .as_ref()
         .and_then(|path| state.url_previews.get(path))
         .and_then(|preview| preview.virtual_note.clone());
-    let save_error = buffer.and_then(|buffer| buffer.save_error.clone());
-    let external_change = buffer.is_some_and(|buffer| buffer.external_change);
 
     div()
         .flex()
@@ -363,20 +295,20 @@ pub fn render_editor(
         .min_w(px(0.))
         .max_w(max_width)
         .overflow_x_hidden()
-        .child(tab_strip::render_tab_strip(state, cx))
+        .child(tab_strip::render_tab_strip(state, &snapshot.dirty_tabs, cx))
         .when_some(active_request_path, |el, path| {
             el.child(render_preview_row(state, theme, &path))
         })
         .when_some(virtual_note, |el, note| {
             el.child(render_virtual_line(&note, theme))
         })
-        .when_some(save_error, |el, message| {
+        .when_some(snapshot.save_error, |el, message| {
             el.child(render_save_error(&message, theme))
         })
-        .when(external_change, |el| {
+        .when(snapshot.external_change, |el| {
             el.child(render_external_change_banner(theme))
         })
-        .child(body)
+        .child(editor_view)
 }
 
 #[cfg(test)]

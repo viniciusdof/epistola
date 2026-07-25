@@ -9,7 +9,7 @@ use gpui::{
 };
 
 use crate::components::editor::tokenize_line;
-use crate::root::EpistolaGui;
+use crate::editor_view::EditorView;
 use crate::state::ActiveFile;
 use crate::theme::Theme;
 
@@ -110,7 +110,7 @@ fn visual_row_ranges(wrapped: &WrappedLine) -> Vec<(usize, usize)> {
 }
 
 pub(crate) struct EditorTextElement {
-    pub gui: Entity<EpistolaGui>,
+    pub editor_view: Entity<EditorView>,
     pub theme: Theme,
     pub focus_handle: FocusHandle,
     pub scroll_handle: ScrollHandle,
@@ -170,7 +170,7 @@ impl Element for EditorTextElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let layout = EditorTextLayout::default();
         let measure_layout = layout.clone();
-        let gui = self.gui.clone();
+        let editor_view = self.editor_view.clone();
         let theme = self.theme;
 
         let mut style = Style::default();
@@ -184,8 +184,8 @@ impl Element for EditorTextElement {
                     _ => None,
                 });
 
-                let gui_ref = gui.read(cx);
-                let Some(buffer) = gui_ref.state.active_buffer() else {
+                let view_ref = editor_view.read(cx);
+                let Some(buffer) = view_ref.active_buffer() else {
                     measure_layout
                         .0
                         .borrow_mut()
@@ -201,7 +201,7 @@ impl Element for EditorTextElement {
                 };
                 let text = buffer.text.clone();
                 let line_starts = buffer.line_start_offsets().to_vec();
-                let file = gui_ref.state.active_file.clone();
+                let file = view_ref.active_file().clone();
 
                 let text_style = window.text_style();
                 let font = text_style.font();
@@ -298,8 +298,8 @@ impl Element for EditorTextElement {
             inner.line_height
         };
 
-        let gui = self.gui.read(cx);
-        let Some(buffer) = gui.state.active_buffer() else {
+        let editor_view = self.editor_view.read(cx);
+        let Some(buffer) = editor_view.active_buffer() else {
             return EditorPrepaintState {
                 cursor: None,
                 selections: Vec::new(),
@@ -377,7 +377,7 @@ impl Element for EditorTextElement {
     ) {
         window.handle_input(
             &self.focus_handle,
-            ElementInputHandler::new(bounds, self.gui.clone()),
+            ElementInputHandler::new(bounds, self.editor_view.clone()),
             cx,
         );
 
@@ -412,8 +412,8 @@ impl Element for EditorTextElement {
             }
         }
 
-        self.gui.update(cx, |gui, _cx| {
-            gui.editor_layout = Some(request_layout.clone());
+        self.editor_view.update(cx, |editor_view, _cx| {
+            editor_view.layout = Some(request_layout.clone());
         });
     }
 }
