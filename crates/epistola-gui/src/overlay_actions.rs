@@ -1,8 +1,8 @@
 use gpui::{Context, Focusable, KeyDownEvent, ScrollStrategy, UniformListScrollHandle, Window};
 
 use crate::actions::{
-    ClearCookies, CycleEnvironment, DeleteRequest, DuplicateRequest, LintCollection, NewCollection,
-    NewEnvironment, NewFolder, NewRequest, OpenCollection, OpenEnvironmentDoc,
+    ClearCookies, CycleEnvironment, DeleteRequest, DuplicateRequest, InstallCli, LintCollection,
+    NewCollection, NewEnvironment, NewFolder, NewRequest, OpenCollection, OpenEnvironmentDoc,
     OpenRecentCollection, OpenRequestFile, OpenSettings, RenameRequest, RunActiveRequest,
     SelectEnvironment, ShowResolvedRequest,
 };
@@ -201,6 +201,7 @@ fn command_palette_items(state: &AppState) -> Vec<PickerItem> {
     }
 
     items.push(PickerItem::new("Open settings", OpenSettings).detail("⌘,"));
+    items.push(PickerItem::new("Install CLI", InstallCli));
 
     items
 }

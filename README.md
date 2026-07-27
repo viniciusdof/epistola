@@ -47,7 +47,7 @@ epistola GET https://example.com/users -H "Accept: application/json" -q page=2
 epistola GET https://example.com/users --save get-users
 ```
 
-Run `epistola --help` or `epistola <command> --help` for full usage; top-level commands are `init`, `request`, `env`, `folder`, `run`, `history`, and `completions`.
+Run `epistola --help` or `epistola <command> --help` for full usage; top-level commands are `init`, `request`, `env`, `folder`, `run`, `history`, `open`, and `completions`.
 
 ## Development
 

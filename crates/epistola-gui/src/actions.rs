@@ -55,6 +55,7 @@ actions!(
         NewFolder,
         NewEnvironment,
         ClearCookies,
+        InstallCli,
         Dismiss,
         ToggleSidebar,
         ToggleDrawer,

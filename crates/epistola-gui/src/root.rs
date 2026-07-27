@@ -11,7 +11,7 @@ use nucleo_matcher::{Config, Matcher};
 
 use crate::actions::{
     ClearCookies, CloseTab, CycleEnvironment, DeleteRequest, Dismiss, DuplicateRequest, GoHome,
-    GoWorkspace, LintCollection, NewCollection, NewEnvironment, NewFolder, NewRequest,
+    GoWorkspace, InstallCli, LintCollection, NewCollection, NewEnvironment, NewFolder, NewRequest,
     OpenCollection, OpenCollectionPicker, OpenEnvironmentDoc, OpenEnvironmentPicker, OpenFolderDoc,
     OpenHistory, OpenRecentCollection, OpenRequestFile, OpenSettings, RenameRequest,
     RunActiveRequest, SelectEnvironment, SelectResponseSubtab, ShowResolvedRequest, SwitchTab,
@@ -264,6 +264,7 @@ impl Render for EpistolaGui {
                 this.start_new_environment_prompt(window, cx)
             }))
             .on_action(cx.listener(|this, _: &ClearCookies, _window, cx| this.clear_cookie_jar(cx)))
+            .on_action(cx.listener(|this, _: &InstallCli, window, cx| this.install_cli(window, cx)))
             .on_action(cx.listener(|this, action: &OpenRequestFile, _window, cx| {
                 this.state.open_request(action.path.clone());
                 this.sync_editor_view(cx);

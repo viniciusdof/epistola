@@ -34,6 +34,7 @@ async fn run() -> Result<()> {
         Command::Folder(args) => commands::folder::run(args, &cwd),
         Command::Run(args) => commands::run::run(args).await,
         Command::History(args) => commands::history::run(args, &cwd),
+        Command::Open(args) => commands::open::run(args),
         Command::Completions(args) => commands::completions::run(args),
         Command::Send(args) => commands::send::run(args, &cwd).await,
     }

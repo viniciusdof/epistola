@@ -3,6 +3,7 @@ pub mod env;
 pub mod folder;
 pub mod history;
 pub mod init;
+pub mod open;
 pub mod request;
 pub mod run;
 pub mod send;

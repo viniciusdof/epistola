@@ -1,6 +1,7 @@
 mod actions;
 mod assets;
 mod buffer;
+mod cli_install;
 mod collection;
 mod components;
 mod editor_view;
