@@ -39,6 +39,7 @@ pub(crate) enum ResizingPanel {
 pub struct EpistolaGui {
     pub(crate) state: AppState,
     pub(crate) editor_view: Entity<EditorView>,
+    pub(crate) response_view: Entity<EditorView>,
     pub(crate) overlay_focus_handle: FocusHandle,
     pub(crate) overlay_input: Entity<TextField>,
     pub(crate) overlay_scroll: UniformListScrollHandle,
@@ -66,11 +67,14 @@ impl EpistolaGui {
         })
         .detach();
 
+        let response_view = cx.new(EditorView::new);
+
         let state = AppState::new(cwd.clone());
 
-        let this = Self {
+        let mut this = Self {
             state,
             editor_view,
+            response_view,
             overlay_focus_handle: cx.focus_handle(),
             overlay_input,
             overlay_scroll: UniformListScrollHandle::default(),
@@ -79,6 +83,7 @@ impl EpistolaGui {
             resizing: None,
             _fs_watcher: None,
         };
+        this.sync_response_view(cx);
         collection::spawn_load_collection(cwd, cx);
         this
     }
@@ -121,6 +126,21 @@ impl EpistolaGui {
         self.editor_view.update(cx, |ev, _| {
             ev.set_active_file(file.clone());
             ev.set_collection_root(collection_root);
+        });
+        self.sync_response_view(cx);
+    }
+
+    /// Pushes the response drawer's current text (derived from the active
+    /// tab's `ActivityResult` and `response_subtab`) into the read-only
+    /// `response_view` buffer — called after anything that changes either.
+    pub(crate) fn sync_response_view(&mut self, cx: &mut Context<Self>) {
+        let (text, content_kind) = response_drawer::compute_display(
+            self.state.active_activity(),
+            self.state.response_subtab,
+        );
+        self.response_view.update(cx, |ev, _| {
+            ev.set_active_file(ActiveFile::None);
+            ev.set_readonly_text(ActiveFile::None, text, content_kind);
         });
     }
 }
@@ -301,6 +321,7 @@ impl Render for EpistolaGui {
             .on_action(
                 cx.listener(|this, action: &SelectResponseSubtab, _window, cx| {
                     this.state.response_subtab = action.subtab;
+                    this.sync_response_view(cx);
                     cx.notify();
                 }),
             )
@@ -326,6 +347,7 @@ impl Render for EpistolaGui {
                 el.child(response_drawer::render_response_drawer(
                     self.state.active_activity(),
                     self.state.response_subtab,
+                    self.response_view.clone(),
                     self.state.drawer_height,
                     cx,
                 ))
@@ -347,19 +369,24 @@ impl Render for EpistolaGui {
                     ))
                 }
                 Overlay::History => {
-                    let selected = self
-                        .state
-                        .overlay_selection(self.state.history_entries.len());
+                    let query = self.overlay_input.read(cx).text().to_string();
+                    let filtered =
+                        history_modal::filter_history(&self.state.history_entries, &query);
+                    let selected = self.state.overlay_selection(filtered.len());
+                    let total_count = self.state.history_entries.len();
                     let on_dismiss = cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.close_overlay(window, cx)
                     });
                     el.child(history_modal::render_history_modal(
-                        &self.state.history_entries,
+                        &self.overlay_input,
+                        &filtered,
+                        total_count,
                         selected,
                         &self.overlay_scroll,
                         theme,
                         &self.overlay_focus_handle,
                         on_dismiss,
+                        cx,
                     ))
                 }
                 Overlay::Prompt(kind) => {

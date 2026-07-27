@@ -1,29 +1,56 @@
 use epistola_engine::history::HistoryEntry;
 use gpui::{
-    div, prelude::*, px, uniform_list, App, ClickEvent, FocusHandle, IntoElement, SharedString,
-    UniformListScrollHandle, Window,
+    div, prelude::*, px, uniform_list, App, ClickEvent, Context, Entity, FocusHandle, IntoElement,
+    SharedString, UniformListScrollHandle, Window,
 };
 use time::OffsetDateTime;
 
+use crate::root::EpistolaGui;
+use crate::text_field::TextField;
 use crate::theme::Theme;
 
 const ROW_HEIGHT: f32 = 46.;
 const MAX_VISIBLE_ROWS: usize = 8;
 
+/// Case-insensitive substring match against `"METHOD URL"`; keeps
+/// most-recent-first order rather than ranking by relevance.
+pub fn filter_history(entries: &[HistoryEntry], query: &str) -> Vec<HistoryEntry> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return entries.to_vec();
+    }
+    entries
+        .iter()
+        .filter(|entry| {
+            let haystack = format!(
+                "{} {}",
+                entry.request.method.to_lowercase(),
+                entry.request.url.to_lowercase()
+            );
+            haystack.contains(&query)
+        })
+        .cloned()
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render_history_modal(
+    query_input: &Entity<TextField>,
     entries: &[HistoryEntry],
+    total_count: usize,
     selected: usize,
     scroll: &UniformListScrollHandle,
     theme: Theme,
     focus_handle: &FocusHandle,
     on_dismiss: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &mut Context<EpistolaGui>,
 ) -> impl IntoElement {
     let empty = entries.is_empty();
     let count = entries.len();
     let rows: Vec<HistoryEntry> = entries.to_vec();
     let scroll = scroll.clone();
     let list_height = px(ROW_HEIGHT * count.clamp(1, MAX_VISIBLE_ROWS) as f32 + 12.);
+    let query = query_input.read(cx).text().to_string();
 
     div()
         .id("history-backdrop")
@@ -64,17 +91,32 @@ pub fn render_history_modal(
                                 .text_size(px(10.5))
                                 .font_family("monospace")
                                 .text_color(theme.text_faint)
-                                .child(format!("{} run(s)", entries.len())),
+                                .child(format!("{count} / {total_count} run(s)")),
                         ),
                 )
+                .child(
+                    div()
+                        .px(px(16.))
+                        .py(px(10.))
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .font_family("monospace")
+                        .text_size(px(13.))
+                        .child(query_input.clone()),
+                )
                 .when(empty, |el| {
+                    let message = if total_count == 0 {
+                        "No runs recorded yet.".to_string()
+                    } else {
+                        format!("No matches for '{query}'")
+                    };
                     el.child(
                         div()
                             .py(px(26.))
                             .text_align(gpui::TextAlign::Center)
                             .text_color(theme.text_faint)
                             .text_size(px(12.5))
-                            .child("No runs recorded yet."),
+                            .child(message),
                     )
                 })
                 .when(!empty, |el| {
@@ -187,5 +229,71 @@ fn relative_time(then: OffsetDateTime) -> String {
         format!("{minutes}m ago")
     } else {
         format!("{}h ago", elapsed.whole_hours())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use epistola_engine::history::{LoggedRequest, LoggedResponse};
+
+    use super::*;
+
+    fn entry(method: &str, url: &str) -> HistoryEntry {
+        HistoryEntry {
+            timestamp: OffsetDateTime::now_utc(),
+            request: LoggedRequest {
+                method: method.to_string(),
+                url: url.to_string(),
+                query: Vec::new(),
+                headers: Vec::new(),
+                body: None,
+            },
+            response: LoggedResponse {
+                status: 200,
+                duration_ms: 12,
+                headers: Vec::new(),
+                body: None,
+            },
+        }
+    }
+
+    #[test]
+    fn empty_query_returns_all_entries_unranked() {
+        let entries = vec![
+            entry("GET", "https://a.example"),
+            entry("POST", "https://b.example"),
+        ];
+        assert_eq!(filter_history(&entries, "").len(), 2);
+        assert_eq!(filter_history(&entries, "   ").len(), 2);
+    }
+
+    #[test]
+    fn matches_are_case_insensitive_and_preserve_order() {
+        let entries = vec![
+            entry("GET", "https://api.example.com/users"),
+            entry("POST", "https://api.example.com/orders"),
+            entry("DELETE", "https://other.example.com/users"),
+        ];
+        let matched = filter_history(&entries, "USERS");
+        assert_eq!(matched.len(), 2);
+        assert_eq!(matched[0].request.url, "https://api.example.com/users");
+        assert_eq!(matched[1].request.url, "https://other.example.com/users");
+    }
+
+    #[test]
+    fn method_is_matchable_too() {
+        let entries = vec![
+            entry("GET", "https://a.example"),
+            entry("POST", "https://a.example"),
+        ];
+        assert_eq!(filter_history(&entries, "post").len(), 1);
+    }
+
+    #[test]
+    fn no_match_returns_empty() {
+        let entries = vec![entry("GET", "https://a.example")];
+        assert!(filter_history(&entries, "nope").is_empty());
     }
 }

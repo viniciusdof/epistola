@@ -2,6 +2,14 @@ use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentKind {
+    Toml,
+    Json,
+    Xml,
+    PlainText,
+}
+
 #[derive(Debug, Clone)]
 struct EditRecord {
     start: usize,
@@ -29,6 +37,7 @@ pub struct EditorBuffer {
     pub save_error: Option<String>,
     pub external_change: bool,
     pub read_only: bool,
+    pub content_kind: ContentKind,
     line_starts: Vec<usize>,
     pub desired_col: Option<usize>,
     undo_stack: Vec<EditRecord>,
@@ -47,6 +56,7 @@ impl EditorBuffer {
             save_error: None,
             external_change: false,
             read_only: false,
+            content_kind: ContentKind::Toml,
             line_starts: Vec::new(),
             desired_col: None,
             undo_stack: Vec::new(),

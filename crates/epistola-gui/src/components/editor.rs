@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use gpui::{div, prelude::*, px, Context, Entity, IntoElement, Pixels};
 
 use crate::actions::RunActiveRequest;
+use crate::buffer::ContentKind;
 use crate::components::kit::{dispatch_on_click, icon, IconName, MethodTag};
 use crate::components::tab_strip;
 use crate::editor_view::{EditorSnapshot, EditorView};
@@ -10,7 +11,7 @@ use crate::root::EpistolaGui;
 use crate::state::{ActiveFile, ActivityResult, AppState};
 use crate::theme::Theme;
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TokenKind {
     Key,
     Punct,
@@ -146,6 +147,239 @@ pub(crate) fn tokenize_line(line: &str) -> Vec<(TokenKind, usize)> {
     if !rest.is_empty() {
         spans.push((TokenKind::Plain, rest.len()));
     }
+    spans
+}
+
+pub(crate) fn tokenize_for(kind: ContentKind, line: &str) -> Vec<(TokenKind, usize)> {
+    match kind {
+        ContentKind::Toml => tokenize_line(line),
+        ContentKind::Json => tokenize_json_line(line),
+        ContentKind::Xml => tokenize_xml_line(line),
+        ContentKind::PlainText => vec![(TokenKind::Plain, line.len())],
+    }
+}
+
+fn json_string_span(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    let mut i = 1;
+    let mut escaped = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if escaped {
+            escaped = false;
+        } else if c == b'\\' {
+            escaped = true;
+        } else if c == b'"' {
+            return i + 1;
+        }
+        i += 1;
+    }
+    s.len()
+}
+
+fn json_value_kind(value: &str) -> TokenKind {
+    if value == "true" || value == "false" || value == "null" {
+        return TokenKind::Number;
+    }
+    let is_number_like = !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E'));
+    if is_number_like {
+        TokenKind::Number
+    } else {
+        TokenKind::Plain
+    }
+}
+
+/// Tokenizes the value half of a JSON line (after any `"key": ` prefix has
+/// already been consumed) — a quoted string, a bracket opening a nested
+/// container, a bare number/bool/null, or `{}`/`[]` for an empty inline
+/// container — plus an optional trailing comma.
+fn tokenize_json_value_tail(value: &str, spans: &mut Vec<(TokenKind, usize)>) {
+    if value.is_empty() {
+        return;
+    }
+    if value.starts_with('"') {
+        let span = json_string_span(value);
+        spans.push((TokenKind::String, span));
+        let after = &value[span..];
+        if after == "," {
+            spans.push((TokenKind::Punct, 1));
+        } else if !after.is_empty() {
+            spans.push((TokenKind::Plain, after.len()));
+        }
+        return;
+    }
+    if value == "{" || value == "[" {
+        spans.push((TokenKind::Punct, value.len()));
+        return;
+    }
+    let (body, comma) = match value.strip_suffix(',') {
+        Some(body) => (body, true),
+        None => (value, false),
+    };
+    let kind = if body == "{}" || body == "[]" {
+        TokenKind::Punct
+    } else {
+        json_value_kind(body)
+    };
+    spans.push((kind, body.len()));
+    if comma {
+        spans.push((TokenKind::Punct, 1));
+    }
+}
+
+/// Line-based highlighter for `serde_json::to_string_pretty` output — one
+/// logical token per line in the common case, not a general JSON parser.
+pub(crate) fn tokenize_json_line(line: &str) -> Vec<(TokenKind, usize)> {
+    let indent_len = line.len() - line.trim_start().len();
+    let mut spans = Vec::new();
+    if indent_len > 0 {
+        spans.push((TokenKind::Plain, indent_len));
+    }
+    let rest = &line[indent_len..];
+    if rest.is_empty() {
+        return spans;
+    }
+
+    if rest.len() == 1 && matches!(rest, "{" | "}" | "[" | "]") {
+        spans.push((TokenKind::Punct, 1));
+        return spans;
+    }
+    if rest.len() == 2 && matches!(&rest[..1], "{" | "}" | "[" | "]") && &rest[1..] == "," {
+        spans.push((TokenKind::Punct, 2));
+        return spans;
+    }
+
+    if rest.starts_with('"') {
+        let span = json_string_span(rest);
+        let after = &rest[span..];
+        let colon = after
+            .find(':')
+            .filter(|&i| after[..i].chars().all(char::is_whitespace));
+        if let Some(colon) = colon {
+            let trailing_spaces = after[colon + 1..].chars().take_while(|c| *c == ' ').count();
+            let punct_len = colon + 1 + trailing_spaces;
+            spans.push((TokenKind::Key, span));
+            spans.push((TokenKind::Punct, punct_len));
+            tokenize_json_value_tail(&after[punct_len..], &mut spans);
+        } else {
+            spans.push((TokenKind::String, span));
+            if after == "," {
+                spans.push((TokenKind::Punct, 1));
+            } else if !after.is_empty() {
+                spans.push((TokenKind::Plain, after.len()));
+            }
+        }
+        return spans;
+    }
+
+    tokenize_json_value_tail(rest, &mut spans);
+    spans
+}
+
+fn xml_string_span(s: &str) -> usize {
+    let quote = s.as_bytes()[0];
+    let bytes = s.as_bytes();
+    let mut i = 1;
+    while i < bytes.len() {
+        if bytes[i] == quote {
+            return i + 1;
+        }
+        i += 1;
+    }
+    s.len()
+}
+
+/// Line-based highlighter for pretty-printed XML — walks a line
+/// left-to-right handling mixed tag/text/attribute content (quick-xml's
+/// indenting writer puts `<a>1</a>`-shaped lines on one line, not one node
+/// per line), not a general XML parser.
+pub(crate) fn tokenize_xml_line(line: &str) -> Vec<(TokenKind, usize)> {
+    let indent_len = line.len() - line.trim_start().len();
+    let mut spans = Vec::new();
+    if indent_len > 0 {
+        spans.push((TokenKind::Plain, indent_len));
+    }
+    let mut rest = &line[indent_len..];
+    if rest.is_empty() {
+        return spans;
+    }
+
+    if rest.starts_with("<!--") {
+        spans.push((TokenKind::Comment, rest.len()));
+        return spans;
+    }
+
+    while !rest.is_empty() {
+        let Some(tag_start) = rest.find('<') else {
+            spans.push((TokenKind::Plain, rest.len()));
+            break;
+        };
+        if tag_start > 0 {
+            spans.push((TokenKind::Plain, tag_start));
+            rest = &rest[tag_start..];
+        }
+
+        let closing = rest.starts_with("</");
+        let punct_len = if closing { 2 } else { 1 };
+        spans.push((TokenKind::Punct, punct_len));
+        rest = &rest[punct_len..];
+
+        let name_len = rest
+            .find(|c: char| c.is_whitespace() || c == '/' || c == '>')
+            .unwrap_or(rest.len());
+        if name_len > 0 {
+            spans.push((TokenKind::Key, name_len));
+            rest = &rest[name_len..];
+        }
+
+        loop {
+            let ws_len: usize = rest
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .map(char::len_utf8)
+                .sum();
+            if ws_len > 0 {
+                spans.push((TokenKind::Plain, ws_len));
+                rest = &rest[ws_len..];
+            }
+            if rest.starts_with("/>") {
+                spans.push((TokenKind::Punct, 2));
+                rest = &rest[2..];
+                break;
+            }
+            if rest.starts_with('>') {
+                spans.push((TokenKind::Punct, 1));
+                rest = &rest[1..];
+                break;
+            }
+            if rest.is_empty() {
+                break;
+            }
+            let attr_name_len = rest
+                .find(|c: char| c.is_whitespace() || c == '=' || c == '>' || c == '/')
+                .unwrap_or(rest.len());
+            if attr_name_len == 0 {
+                spans.push((TokenKind::Plain, rest.len()));
+                rest = "";
+                break;
+            }
+            spans.push((TokenKind::Key, attr_name_len));
+            rest = &rest[attr_name_len..];
+            if rest.starts_with('=') {
+                spans.push((TokenKind::Punct, 1));
+                rest = &rest[1..];
+                if rest.starts_with('"') || rest.starts_with('\'') {
+                    let value_len = xml_string_span(rest);
+                    spans.push((TokenKind::String, value_len));
+                    rest = &rest[value_len..];
+                }
+            }
+        }
+    }
+
     spans
 }
 
@@ -320,6 +554,16 @@ mod tokenize_tests {
         assert_eq!(total, line.len(), "spans for {line:?} do not cover it");
     }
 
+    fn json_spans_cover_line(line: &str) {
+        let total: usize = tokenize_json_line(line).iter().map(|(_, len)| len).sum();
+        assert_eq!(total, line.len(), "json spans for {line:?} do not cover it");
+    }
+
+    fn xml_spans_cover_line(line: &str) {
+        let total: usize = tokenize_xml_line(line).iter().map(|(_, len)| len).sum();
+        assert_eq!(total, line.len(), "xml spans for {line:?} do not cover it");
+    }
+
     #[test]
     fn tokenize_line_spans_are_contiguous() {
         for line in [
@@ -339,5 +583,132 @@ mod tokenize_tests {
         ] {
             spans_cover_line(line);
         }
+    }
+
+    #[test]
+    fn tokenize_json_line_spans_are_contiguous() {
+        for line in [
+            "",
+            "{",
+            "}",
+            "},",
+            "[",
+            "]",
+            "],",
+            r#"  "key": "value","#,
+            r#"  "key": "value""#,
+            r#"  "escaped": "a \" quote","#,
+            "  \"num\": 42,",
+            "  \"num\": 42",
+            "  \"flag\": true,",
+            "  \"nothing\": null,",
+            "  \"nested\": {",
+            "  \"arr\": [",
+            "  \"empty_obj\": {},",
+            "  \"empty_arr\": [],",
+            r#"  "a string value in an array","#,
+            r#"  "last string in an array""#,
+        ] {
+            json_spans_cover_line(line);
+        }
+    }
+
+    #[test]
+    fn tokenize_json_line_colors_keys_and_values() {
+        let spans = tokenize_json_line(r#"  "key": "value","#);
+        assert_eq!(
+            spans.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+            vec![
+                TokenKind::Plain,
+                TokenKind::Key,
+                TokenKind::Punct,
+                TokenKind::String,
+                TokenKind::Punct
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_json_line_colors_numbers_and_bools() {
+        let spans = tokenize_json_line("  \"n\": 42,");
+        assert_eq!(spans.last().map(|(k, _)| *k), Some(TokenKind::Punct));
+        assert!(spans.contains(&(TokenKind::Number, 2)));
+
+        let spans = tokenize_json_line("  \"flag\": true");
+        assert!(spans.contains(&(TokenKind::Number, 4)));
+    }
+
+    #[test]
+    fn tokenize_xml_line_spans_are_contiguous() {
+        for line in [
+            "",
+            "<root>",
+            "</root>",
+            "<a>1</a>",
+            "<b/>",
+            r#"<tag attr="value">"#,
+            r#"<tag attr="value" other='q'>"#,
+            "plain text content",
+            "<!-- a comment -->",
+            "<a>text before<b/>text after</a>",
+            "<tag/>",
+            "<tag attr=\"unterminated>",
+        ] {
+            xml_spans_cover_line(line);
+        }
+    }
+
+    #[test]
+    fn tokenize_xml_line_colors_tags_and_attributes() {
+        let spans = tokenize_xml_line(r#"<tag attr="value">"#);
+        assert_eq!(
+            spans.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+            vec![
+                TokenKind::Punct,
+                TokenKind::Key,
+                TokenKind::Plain,
+                TokenKind::Key,
+                TokenKind::Punct,
+                TokenKind::String,
+                TokenKind::Punct,
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_xml_line_handles_inline_text_between_tags() {
+        let spans = tokenize_xml_line("<a>1</a>");
+        assert_eq!(
+            spans.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+            vec![
+                TokenKind::Punct,
+                TokenKind::Key,
+                TokenKind::Punct,
+                TokenKind::Plain,
+                TokenKind::Punct,
+                TokenKind::Key,
+                TokenKind::Punct,
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_for_dispatches_by_content_kind() {
+        assert_eq!(
+            tokenize_for(ContentKind::Toml, "key = 1"),
+            tokenize_line("key = 1")
+        );
+        assert_eq!(
+            tokenize_for(ContentKind::Json, "\"a\": 1"),
+            tokenize_json_line("\"a\": 1")
+        );
+        assert_eq!(
+            tokenize_for(ContentKind::Xml, "<a/>"),
+            tokenize_xml_line("<a/>")
+        );
+        assert_eq!(
+            tokenize_for(ContentKind::PlainText, "hello"),
+            vec![(TokenKind::Plain, 5)]
+        );
     }
 }

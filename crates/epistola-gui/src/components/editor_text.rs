@@ -8,7 +8,7 @@ use gpui::{
     Pixels, Point, ScrollHandle, SharedString, Style, TextAlign, TextRun, Window, WrappedLine,
 };
 
-use crate::components::editor::tokenize_line;
+use crate::components::editor::tokenize_for;
 use crate::editor_view::EditorView;
 use crate::state::ActiveFile;
 use crate::theme::Theme;
@@ -200,6 +200,7 @@ impl Element for EditorTextElement {
                     return size(px(0.), line_height);
                 };
                 let text = buffer.text.clone();
+                let content_kind = buffer.content_kind;
                 let line_starts = buffer.line_start_offsets().to_vec();
                 let file = view_ref.active_file().clone();
 
@@ -213,7 +214,7 @@ impl Element for EditorTextElement {
                         .get(i + 1)
                         .map(|&next| next - 1)
                         .unwrap_or(text.len());
-                    for (kind, len) in tokenize_line(&text[start..end]) {
+                    for (kind, len) in tokenize_for(content_kind, &text[start..end]) {
                         if len > 0 {
                             runs.push(TextRun {
                                 len,

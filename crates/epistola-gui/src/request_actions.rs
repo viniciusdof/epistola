@@ -49,6 +49,7 @@ impl EpistolaGui {
             },
         };
         self.state.activity.insert(tab, activity);
+        self.sync_response_view(cx);
         cx.notify();
     }
 
@@ -71,6 +72,7 @@ impl EpistolaGui {
             Err(err) => ActivityResult::LintFailed(err),
         };
         self.state.activity.insert(tab, activity);
+        self.sync_response_view(cx);
         cx.notify();
     }
 

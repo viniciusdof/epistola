@@ -42,6 +42,7 @@ pub fn spawn_run(
             this.state
                 .activity
                 .insert(tab.clone(), ActivityResult::Running);
+            this.sync_response_view(cx);
             cx.notify();
         });
 
@@ -72,6 +73,7 @@ pub fn spawn_run(
 
         let _ = weak.update(cx, |this, cx| {
             this.state.activity.insert(tab.clone(), activity);
+            this.sync_response_view(cx);
             cx.notify();
         });
     })

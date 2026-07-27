@@ -6,23 +6,12 @@ use crate::actions::{
     OpenRecentCollection, OpenRequestFile, OpenSettings, RenameRequest, RunActiveRequest,
     SelectEnvironment, ShowResolvedRequest,
 };
+use crate::components::history_modal::filter_history;
 use crate::components::picker::{filter_items, PickerItem};
 use crate::root::EpistolaGui;
 use crate::state::{AppState, Overlay};
 
 impl EpistolaGui {
-    pub(crate) fn open_overlay(
-        &mut self,
-        overlay: Overlay,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.state.open_overlay(overlay);
-        self.overlay_scroll = UniformListScrollHandle::default();
-        window.focus(&self.overlay_focus_handle, cx);
-        cx.notify();
-    }
-
     /// Opens an overlay whose query/value is typed into the shared `overlay_input` field.
     pub(crate) fn open_text_overlay(
         &mut self,
@@ -79,7 +68,7 @@ impl EpistolaGui {
                 epistola_engine::history::read_entries(&collection.root).unwrap_or_default()
             })
             .unwrap_or_default();
-        self.open_overlay(Overlay::History, window, cx);
+        self.open_text_overlay(Overlay::History, "Filter history…", window, cx);
     }
 
     pub(crate) fn refresh_overlay_items(&mut self, cx: &mut Context<Self>) {
@@ -104,19 +93,22 @@ impl EpistolaGui {
         self.close_overlay(window, cx);
     }
 
-    pub(crate) fn overlay_item_count(&self) -> usize {
+    pub(crate) fn overlay_item_count(&self, cx: &Context<Self>) -> usize {
         match self.state.overlay {
             Some(Overlay::CommandPalette)
             | Some(Overlay::QuickOpen)
             | Some(Overlay::EnvironmentPicker)
             | Some(Overlay::SwitchCollection) => self.overlay_items.len(),
-            Some(Overlay::History) => self.state.history_entries.len(),
+            Some(Overlay::History) => {
+                let query = self.overlay_input.read(cx).text().to_string();
+                filter_history(&self.state.history_entries, &query).len()
+            }
             Some(Overlay::Prompt(_)) | None => 0,
         }
     }
 
     pub(crate) fn move_overlay_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let count = self.overlay_item_count();
+        let count = self.overlay_item_count(cx);
         if count == 0 {
             return;
         }

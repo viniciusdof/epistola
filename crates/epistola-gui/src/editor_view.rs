@@ -13,7 +13,7 @@ use crate::actions::{
     Backspace, Copy, Cut, Delete, End, Home, InsertNewline, MoveDown, MoveLeft, MoveRight, MoveUp,
     Paste, Redo, Save, SelectAll, SelectDown, SelectLeft, SelectRight, SelectUp, Undo,
 };
-use crate::buffer::EditorBuffer;
+use crate::buffer::{ContentKind, EditorBuffer};
 use crate::components::editor_text::{EditorTextElement, EditorTextLayout};
 use crate::state::ActiveFile;
 use crate::theme::Theme;
@@ -114,6 +114,31 @@ impl EditorView {
                 EditorBuffer::new(text)
             }
         });
+    }
+
+    /// Overwrites (or creates) a read-only buffer with fresh derived
+    /// content — unlike `ensure_buffer`, always reflects the latest
+    /// `text`/`content_kind` rather than a no-op once a buffer exists.
+    /// Skips the write (and the selection/undo reset `set_text` implies)
+    /// when nothing actually changed.
+    pub(crate) fn set_readonly_text(
+        &mut self,
+        file: ActiveFile,
+        text: String,
+        content_kind: ContentKind,
+    ) {
+        match self.buffers.get_mut(&file) {
+            Some(buffer) if buffer.text != text || buffer.content_kind != content_kind => {
+                buffer.set_text(text);
+                buffer.content_kind = content_kind;
+            }
+            Some(_) => {}
+            None => {
+                let mut buffer = EditorBuffer::read_only(text);
+                buffer.content_kind = content_kind;
+                self.buffers.insert(file, buffer);
+            }
+        }
     }
 
     pub(crate) fn remove_buffer(&mut self, file: &ActiveFile) {
