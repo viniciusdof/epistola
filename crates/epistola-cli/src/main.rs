@@ -1,4 +1,5 @@
 mod app;
+mod build_info;
 mod cli;
 mod client_config;
 mod commands;

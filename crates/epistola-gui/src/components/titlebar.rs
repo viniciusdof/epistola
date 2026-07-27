@@ -1,8 +1,8 @@
 use gpui::{div, prelude::*, px, Context, IntoElement, Pixels, SharedString};
 
 use crate::actions::{
-    OpenCollectionPicker, OpenEnvironmentPicker, OpenHistory, OpenSettings, ToggleCommandPalette,
-    ToggleQuickOpen,
+    OpenAbout, OpenCollectionPicker, OpenEnvironmentPicker, OpenHistory, OpenSettings,
+    ToggleCommandPalette, ToggleQuickOpen,
 };
 use crate::components::kit::{
     dispatch_on_click, dot_pill, icon, IconChipButton, IconName, SearchTrigger,
@@ -145,11 +145,14 @@ pub fn render_titlebar(
                 .gap(px(10.))
                 .child(
                     div()
+                        .id("titlebar-logo")
                         .flex_none()
+                        .cursor_pointer()
                         .font_family("monospace")
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_size(px(14.))
                         .text_color(theme.accent)
+                        .on_click(dispatch_on_click(OpenAbout))
                         .child("ϵ"),
                 )
                 .child(render_breadcrumb(state, theme)),

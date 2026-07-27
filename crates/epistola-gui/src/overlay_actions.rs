@@ -2,9 +2,9 @@ use gpui::{Context, Focusable, KeyDownEvent, ScrollStrategy, UniformListScrollHa
 
 use crate::actions::{
     ClearCookies, CycleEnvironment, DeleteRequest, DuplicateRequest, InstallCli, LintCollection,
-    NewCollection, NewEnvironment, NewFolder, NewRequest, OpenCollection, OpenEnvironmentDoc,
-    OpenRecentCollection, OpenRequestFile, OpenSettings, RenameRequest, RunActiveRequest,
-    SelectEnvironment, ShowResolvedRequest,
+    NewCollection, NewEnvironment, NewFolder, NewRequest, OpenAbout, OpenCollection,
+    OpenEnvironmentDoc, OpenRecentCollection, OpenRequestFile, OpenSettings, RenameRequest,
+    RunActiveRequest, SelectEnvironment, ShowResolvedRequest,
 };
 use crate::components::history_modal::filter_history;
 use crate::components::picker::{filter_items, PickerItem};
@@ -71,6 +71,11 @@ impl EpistolaGui {
         self.open_text_overlay(Overlay::History, "Filter history…", window, cx);
     }
 
+    pub(crate) fn open_about(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.state.open_overlay(Overlay::About);
+        cx.notify();
+    }
+
     pub(crate) fn refresh_overlay_items(&mut self, cx: &mut Context<Self>) {
         let items = match self.state.overlay {
             Some(Overlay::CommandPalette) => command_palette_items(&self.state),
@@ -103,7 +108,7 @@ impl EpistolaGui {
                 let query = self.overlay_input.read(cx).text().to_string();
                 filter_history(&self.state.history_entries, &query).len()
             }
-            Some(Overlay::Prompt(_)) | None => 0,
+            Some(Overlay::About) | Some(Overlay::Prompt(_)) | None => 0,
         }
     }
 
@@ -144,7 +149,7 @@ impl EpistolaGui {
                 }
             }
             Overlay::Prompt(kind) => self.submit_prompt(kind, window, cx),
-            Overlay::History => {}
+            Overlay::History | Overlay::About => {}
         }
     }
 
@@ -194,6 +199,7 @@ fn command_palette_items(state: &AppState) -> Vec<PickerItem> {
 
     items.push(PickerItem::new("Open settings", OpenSettings).detail("⌘,"));
     items.push(PickerItem::new("Install CLI", InstallCli));
+    items.push(PickerItem::new("About Epistola", OpenAbout));
 
     items
 }

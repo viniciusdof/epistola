@@ -5,17 +5,27 @@
 )]
 
 fn main() {
+    #[cfg_attr(not(windows), allow(unused_variables))]
+    let build = emit_build_info_env();
     #[cfg(windows)]
-    embed_icon();
+    embed_icon(&build);
 }
 
+include!("../../build-support/build_info.rs");
+
 #[cfg(windows)]
-fn embed_icon() {
+fn embed_icon(build: &BuildEnv) {
     println!("cargo:rerun-if-changed=../../resources/icon.ico");
 
     let icon =
         concat!(env!("CARGO_MANIFEST_DIR"), "/../../resources/icon.ico").replace('\\', "\\\\");
     let pkg_version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
+    let product_version = if build.channel == "nightly" {
+        let dirty = if build.dirty { "-dirty" } else { "" };
+        format!("nightly {} ({}{dirty})", build.git_date, build.git_sha)
+    } else {
+        pkg_version.clone()
+    };
     let mut version_parts = pkg_version
         .split('.')
         .map(|part| part.parse::<u16>().unwrap_or(0))
@@ -47,7 +57,7 @@ BEGIN
             VALUE "FileDescription", "Epistola CLI\0"
             VALUE "FileVersion", "{pkg_version}\0"
             VALUE "ProductName", "Epistola\0"
-            VALUE "ProductVersion", "{pkg_version}\0"
+            VALUE "ProductVersion", "{product_version}\0"
         END
     END
     BLOCK "VarFileInfo"

@@ -12,8 +12,8 @@ use nucleo_matcher::{Config, Matcher};
 use crate::actions::{
     ClearCookies, CloseTab, CycleEnvironment, DeleteRequest, Dismiss, DuplicateRequest, GoHome,
     GoWorkspace, InstallCli, LintCollection, NewCollection, NewEnvironment, NewFolder, NewRequest,
-    OpenCollection, OpenCollectionPicker, OpenEnvironmentDoc, OpenEnvironmentPicker, OpenFolderDoc,
-    OpenHistory, OpenRecentCollection, OpenRequestFile, OpenSettings, RenameRequest,
+    OpenAbout, OpenCollection, OpenCollectionPicker, OpenEnvironmentDoc, OpenEnvironmentPicker,
+    OpenFolderDoc, OpenHistory, OpenRecentCollection, OpenRequestFile, OpenSettings, RenameRequest,
     RunActiveRequest, SelectEnvironment, SelectResponseSubtab, ShowResolvedRequest, SwitchTab,
     ToggleCommandPalette, ToggleDrawer, ToggleFolderCollapse, ToggleQuickOpen, ToggleSidebar,
 };
@@ -22,7 +22,7 @@ use crate::components::history_modal;
 use crate::components::picker::{render_picker, PickerItem};
 use crate::components::prompt_modal::render_prompt_modal;
 use crate::components::{
-    editor, home, resize_handle, response_drawer, sidebar, statusbar, titlebar,
+    about_modal, editor, home, resize_handle, response_drawer, sidebar, statusbar, titlebar,
 };
 use crate::editor_view::{EditorSaved, EditorView};
 use crate::state::{self, ActiveFile, ActivityResult, AppState, Overlay, View};
@@ -236,6 +236,7 @@ impl Render for EpistolaGui {
                 this.toggle_quick_open(window, cx)
             }))
             .on_action(cx.listener(|this, _: &OpenSettings, _window, cx| this.open_settings(cx)))
+            .on_action(cx.listener(|this, _: &OpenAbout, window, cx| this.open_about(window, cx)))
             .on_action(cx.listener(|this, _: &GoHome, _window, cx| this.go_home(cx)))
             .on_action(cx.listener(|this, _: &GoWorkspace, _window, cx| this.go_workspace(cx)))
             .on_action(
@@ -388,6 +389,12 @@ impl Render for EpistolaGui {
                         on_dismiss,
                         cx,
                     ))
+                }
+                Overlay::About => {
+                    let on_dismiss = cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.close_overlay(window, cx)
+                    });
+                    el.child(about_modal::render_about_modal(theme, on_dismiss))
                 }
                 Overlay::Prompt(kind) => {
                     let title = kind.title();

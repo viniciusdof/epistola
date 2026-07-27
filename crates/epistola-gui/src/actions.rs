@@ -37,6 +37,7 @@ actions!(
         ToggleCommandPalette,
         ToggleQuickOpen,
         OpenSettings,
+        OpenAbout,
         GoHome,
         GoWorkspace,
         RunActiveRequest,

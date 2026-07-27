@@ -27,6 +27,7 @@ jobs:
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
       sha: ${{ steps.check.outputs.sha }}
+      git_date: ${{ steps.check.outputs.git_date }}
       tag_name: ${{ steps.check.outputs.tag_name }}
     steps:
       - uses: actions/checkout@v7
@@ -37,6 +38,7 @@ jobs:
         run: |
           head_sha="$(git rev-parse HEAD)"
           echo "sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "git_date=$(git log -1 --date=format:%Y-%m-%d --format=%cd "$head_sha")" >> "$GITHUB_OUTPUT"
 
           existing="$(git tag --points-at HEAD --list 'nightly-*')"
           if [ -n "$existing" ]; then
@@ -50,6 +52,10 @@ jobs:
   build:
     needs: check-for-changes
     if: needs.check-for-changes.outputs.should_run == 'true'
+    env:
+      EPISTOLA_CHANNEL: nightly
+      EPISTOLA_GIT_SHA: ${{ needs.check-for-changes.outputs.sha }}
+      EPISTOLA_GIT_DATE: ${{ needs.check-for-changes.outputs.git_date }}
     strategy:
       fail-fast: false
       matrix:
@@ -109,6 +115,18 @@ jobs:
       - name: Build release binaries (Windows)
         if: matrix.platform == 'windows'
         run: cargo build --release -p epistola-cli -p epistola-gui
+
+      - name: Sanity-check --version reflects the nightly channel
+        if: matrix.platform == 'linux'
+        run: target/release/epistola --version | grep -q nightly
+
+      - name: Set nightly package version
+        run: |
+          compact_date="${EPISTOLA_GIT_DATE//-/}"
+          short_sha="${EPISTOLA_GIT_SHA:0:7}"
+          version="0.0.0-nightly.${compact_date}.g${short_sha}"
+          sed -i.bak "s/^version = .*/version = \"$version\"/" packager.toml
+          rm -f packager.toml.bak
 
       - name: Install cargo-packager
         run: cargo install cargo-packager --locked

@@ -1,3 +1,4 @@
+pub mod about_modal;
 pub mod editor;
 pub mod editor_text;
 pub mod history_modal;

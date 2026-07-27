@@ -56,6 +56,7 @@ pub enum Overlay {
     EnvironmentPicker,
     SwitchCollection,
     History,
+    About,
     Prompt(PromptKind),
 }
 

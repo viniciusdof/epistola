@@ -1,10 +1,16 @@
 use clap::{Parser, Subcommand};
 
+use crate::build_info::{self, BUILD_INFO};
 use crate::commands::{completions, env, folder, history, init, open, request, run};
 
 /// A Rust-native HTTP client, built for the terminal.
 #[derive(Parser, Debug)]
-#[command(name = "epistola", version, about)]
+#[command(
+    name = "epistola",
+    version = build_info::short_version(&BUILD_INFO),
+    long_version = build_info::long_version(&BUILD_INFO),
+    about
+)]
 pub struct App {
     #[command(subcommand)]
     pub command: Command,

@@ -1,6 +1,7 @@
 mod actions;
 mod assets;
 mod buffer;
+mod build_info;
 mod cli_install;
 mod collection;
 mod components;
